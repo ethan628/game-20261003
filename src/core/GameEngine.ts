@@ -4,11 +4,13 @@
 
 import * as THREE from 'three';
 import { CONFIG } from '../config.ts';
+import { PostProcessingManager } from './PostProcessing.ts';
 
 export class GameEngine {
   public scene: THREE.Scene;
   public camera: THREE.PerspectiveCamera;
   public renderer: THREE.WebGLRenderer;
+  public postProcessing: PostProcessingManager;
   private container: HTMLElement;
 
   constructor(container: HTMLElement) {
@@ -17,7 +19,7 @@ export class GameEngine {
     // 1. 場景
     this.scene = new THREE.Scene();
 
-    // 2. 鏡頭 (FOV 調至 60 度，提供更自然的低多邊形透視)
+    // 2. 鏡頭 (FOV 調至 60 度，提供更自然的透視)
     const aspect = window.innerWidth / window.innerHeight;
     this.camera = new THREE.PerspectiveCamera(CONFIG.CAMERA.FOV, aspect, 0.1, 1600);
 
@@ -34,7 +36,7 @@ export class GameEngine {
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = CONFIG.RENDER.TONE_MAPPING_EXPOSURE;
 
-    // 陰影配置
+    // 陰影配置 (PCFSoftShadowMap)
     if (CONFIG.RENDER.SHADOWS_ENABLED) {
       this.renderer.shadowMap.enabled = true;
       this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
@@ -42,7 +44,10 @@ export class GameEngine {
 
     this.container.appendChild(this.renderer.domElement);
 
-    // 4. 視窗縮放監聽
+    // 4. 後處理管理器
+    this.postProcessing = new PostProcessingManager(this.renderer, this.scene, this.camera);
+
+    // 5. 視窗縮放監聽
     window.addEventListener('resize', this.resize);
   }
 
@@ -52,17 +57,15 @@ export class GameEngine {
     this.camera.aspect = width / height;
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(width, height);
+    this.postProcessing.resize(width, height);
   };
 
-  public render(): void {
-    this.renderer.render(this.scene, this.camera);
+  public render(delta: number = 0.016): void {
+    this.postProcessing.render(delta);
   }
 
   public getRenderInfo(): { calls: number; triangles: number } {
-    return {
-      calls: this.renderer.info.render.calls,
-      triangles: this.renderer.info.render.triangles
-    };
+    return this.postProcessing.getSceneRenderInfo();
   }
 
   public dispose(): void {

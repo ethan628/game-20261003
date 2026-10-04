@@ -86,3 +86,29 @@
 - **不使用任何外部付費或專案依賴的外部 3D 模型檔案**（如 glTF/FBX/OBJ）。
 - 人物角色採用程式化生成之低多邊形（Low-Poly）方塊人形（Box Character）。
 - 建築、道路與自然景觀均由幾何圖元動態建立，搭配扁平色調（Flat Shading）材質與柔和陰影。
+
+---
+
+## 6. 交通號誌系統模組化與對外公開介面規範 (Traffic Signal System Architecture)
+
+交通號誌系統為開放世界中行人、未來車輛 AI、以及通緝違規系統之**核心控制中樞**。遵循低耦合、單一職責與安全封裝原則：
+
+- **獨立模組與封裝**：
+  - 號誌控制器與雙相位時間狀態機封裝於 `src/systems/traffic-signals/`。
+  - 外部模組（車輛、行人、玩家、通緝系統）**嚴禁直接修改號誌內部計時器或相位**，只能透過公開介面進行狀態查詢或訂閱事件。
+- **公開查詢介面**：
+  1. **車輛號誌查詢 (供車輛 AI 與車流模擬使用)**：
+     - `getVehicleState(intersectionId: string, approachId: string): VehicleSignalInfo`
+     - 回傳 `{ state: 'green' | 'yellow' | 'red' | 'flashingYellow', remainingSec: number }`。
+  2. **行人號誌查詢 (供行人穿越道 AI 使用)**：
+     - `getPedestrianState(intersectionId: string, crossingId: string): PedestrianSignalInfo`
+     - 回傳 `{ state: 'walk' | 'flashing' | 'dontWalk', remainingSec: number }`。
+  3. **闖紅燈違規檢測 (供通緝系統 WantedSystem 與警方 AI 使用)**：
+     - `isRunningRedLight(position: Point2D, headingRad: number): boolean`
+     - 當車輛或玩家於紅燈期間越過停止線進入路口時回傳 `true`，可直接觸發違規通緝星級提升。
+  4. **全域狀態廣播事件**：
+     - `trafficSignalSystem.on('signal:changed', ({ intersectionId, groupAState, groupBState }) => void)`
+- **GPU 渲染要求**：
+  - 號誌系統全部使用 `InstancedMesh` 批次渲染，Draw Calls 嚴格不超過 6 個。
+  - 僅對 200 公尺半徑內的路口更新視覺與倒數數字，遠處路口純邏輯運算。
+

@@ -97,5 +97,8 @@ export class LoadingOverlay {
 
   public hide(): void {
     this.el.classList.add('hidden');
+    if (document.activeElement && document.activeElement instanceof HTMLElement) {
+      document.activeElement.blur();
+    }
   }
 }

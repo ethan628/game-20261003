@@ -188,6 +188,7 @@ export class LocationModal {
 
     // 確認載入世界
     this.btnConfirm.addEventListener('click', () => {
+      this.btnConfirm.blur();
       this.hide();
       this.hasActiveWorld = true;
       this.onSelectLocationCallback?.(
@@ -200,6 +201,7 @@ export class LocationModal {
 
     // 關閉按鈕
     this.btnClose.addEventListener('click', () => {
+      this.btnClose.blur();
       if (this.hasActiveWorld) {
         this.hide();
       }
@@ -253,6 +255,10 @@ export class LocationModal {
 
   public hide(): void {
     this.el.classList.add('hidden');
+    // 釋放對話框內部任何可能殘留焦點，避免按空白鍵 (跳躍) 時誤觸按鈕
+    if (document.activeElement && document.activeElement instanceof HTMLElement) {
+      document.activeElement.blur();
+    }
   }
 
   public isVisible(): boolean {

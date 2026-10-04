@@ -143,6 +143,9 @@ export class StreetViewWindow {
     // 3. 綁定按鈕與拖曳事件
     this.setupWindowInteractions();
 
+    // 4. 監聽瀏覽器視窗變更，確保視窗不漂移出畫面
+    window.addEventListener('resize', this.onWindowResize);
+
     // 檢查金鑰狀態
     if (!this.mapillaryService.hasToken()) {
       this.noTokenOverlay.classList.remove('hidden');
@@ -253,6 +256,7 @@ export class StreetViewWindow {
     window.removeEventListener('mousemove', this.onMouseMoveDrag);
     window.removeEventListener('mouseup', this.onMouseUpDrag);
     document.body.classList.remove('is-dragging-window');
+    this.ensureInViewport();
   };
 
   private onResizeMouseDown = (e: MouseEvent, dir: string): void => {
@@ -338,6 +342,65 @@ export class StreetViewWindow {
     window.removeEventListener('mouseup', this.onMouseUpResize);
     document.body.classList.remove('is-resizing-window');
 
+    this.ensureInViewport();
+    this.viewer?.resize();
+  };
+
+  /**
+   * 確保視窗保持在螢幕可視邊界內
+   */
+  public ensureInViewport(): void {
+    if (this.isSplitMode || this.isFullscreen) return;
+
+    const winW = window.innerWidth;
+    const winH = window.innerHeight;
+
+    const maxW = Math.max(280, winW - 20);
+    const maxH = Math.max(180, winH - 20);
+
+    const currentW = Math.min(this.el.offsetWidth || 400, maxW);
+    const currentH = Math.min(this.el.offsetHeight || 260, maxH);
+    this.el.style.width = `${currentW}px`;
+    this.el.style.height = `${currentH}px`;
+
+    if (!this.el.style.left || this.el.style.left === 'auto') {
+      this.el.style.left = '';
+      this.el.style.top = '';
+      this.el.style.right = '20px';
+      this.el.style.bottom = '20px';
+      return;
+    }
+
+    const rect = this.el.getBoundingClientRect();
+    let left = rect.left;
+    let top = rect.top;
+
+    if (left + currentW > winW - 10) {
+      left = Math.max(10, winW - currentW - 10);
+    }
+    if (left < 10) {
+      left = 10;
+    }
+    if (top + currentH > winH - 10) {
+      top = Math.max(10, winH - currentH - 10);
+    }
+    if (top < 10) {
+      top = 10;
+    }
+
+    this.el.style.left = `${left}px`;
+    this.el.style.top = `${top}px`;
+    this.el.style.right = 'auto';
+    this.el.style.bottom = 'auto';
+  }
+
+  private onWindowResize = (): void => {
+    if (!this.isVisible) return;
+    if (this.isFullscreen || this.isSplitMode) {
+      this.viewer?.resize();
+      return;
+    }
+    this.ensureInViewport();
     this.viewer?.resize();
   };
 
@@ -410,6 +473,9 @@ export class StreetViewWindow {
   public hide(): void {
     this.isVisible = false;
     this.el.classList.add('hidden');
+    if (document.activeElement && document.activeElement instanceof HTMLElement) {
+      document.activeElement.blur();
+    }
     if (this.isSplitMode) {
       this.toggleSplitMode();
     }
@@ -474,9 +540,8 @@ export class StreetViewWindow {
   public toggleFullscreen(): void {
     if (!this.isVisible) return;
 
-    this.isFullscreen = !this.isFullscreen;
-
-    if (this.isFullscreen) {
+    if (!this.isFullscreen) {
+      this.isFullscreen = true;
       if (this.isSplitMode) {
         this.el.classList.remove('split-mode');
         document.body.classList.remove('split-screen-active');
@@ -488,15 +553,22 @@ export class StreetViewWindow {
       this.el.classList.add('fullscreen-mode');
       this.btnFullscreen.textContent = '🗗 縮小';
     } else {
+      this.isFullscreen = false;
       this.el.classList.remove('fullscreen-mode');
       this.btnFullscreen.textContent = '⛶ 全螢幕';
       this.resetToDefaultPositionAndSize();
+      this.ensureInViewport();
     }
 
     if (this.viewer) {
+      this.viewer.resize();
+      requestAnimationFrame(() => this.viewer?.resize());
       setTimeout(() => {
-        this.viewer.resize();
-      }, 50);
+        this.viewer?.resize();
+      }, 100);
+      setTimeout(() => {
+        this.viewer?.resize();
+      }, 250);
     }
   }
 
@@ -527,6 +599,19 @@ export class StreetViewWindow {
       return;
     }
     this.lastUpdateTime = now;
+
+    // 0. 安全防護：若視窗因解析度或縮小視窗漂移至畫面外，主動拉回可視範圍
+    if (!this.isFullscreen && !this.isSplitMode) {
+      const rect = this.el.getBoundingClientRect();
+      if (
+        rect.right > window.innerWidth - 10 ||
+        rect.bottom > window.innerHeight - 10 ||
+        rect.left < 10 ||
+        rect.top < 10
+      ) {
+        this.ensureInViewport();
+      }
+    }
 
     // 1. 座標轉換：遊戲世界公尺座標 ➔ 真實經緯度
     const geo = projection.unproject(playerPos.x, playerPos.z);
@@ -613,6 +698,7 @@ export class StreetViewWindow {
   }
 
   public dispose(): void {
+    window.removeEventListener('resize', this.onWindowResize);
     this.hide();
     if (this.viewer) {
       try {

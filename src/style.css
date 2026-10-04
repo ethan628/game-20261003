@@ -165,6 +165,8 @@ html, body {
 .overlay-backdrop.hidden {
   opacity: 0;
   pointer-events: none;
+  visibility: hidden;
+  display: none !important;
 }
 
 /* 地點選擇對話框 */
@@ -1025,3 +1027,644 @@ body.is-dragging-window * {
   0% { transform: scale(0.4); opacity: 1; }
   100% { transform: scale(1.6); opacity: 0; }
 }
+
+/* ==========================================================================
+   GTA 風格自繪小地圖 (Minimap) 樣式
+   ========================================================================== */
+.gta-minimap-wrapper {
+  position: fixed;
+  left: 24px;
+  bottom: 24px;
+  z-index: 90;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  background: rgba(15, 23, 42, 0.92);
+  backdrop-filter: blur(14px);
+  border: 1.5px solid rgba(56, 189, 248, 0.45);
+  border-radius: 18px;
+  padding: 6px 8px 8px 8px;
+  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.75), 0 0 20px rgba(56, 189, 248, 0.15);
+  user-select: none;
+  box-sizing: border-box;
+  touch-action: none;
+}
+
+.gta-minimap-wrapper.is-dragging-win {
+  box-shadow: 0 20px 45px rgba(0, 0, 0, 0.85), 0 0 25px rgba(56, 189, 248, 0.35);
+  border-color: #38bdf8;
+  cursor: grabbing !important;
+}
+
+.gta-minimap-wrapper.hidden {
+  display: none !important;
+}
+
+.minimap-header-bar {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 5px;
+  padding: 0 2px;
+  cursor: grab;
+  box-sizing: border-box;
+}
+
+.minimap-header-bar:active {
+  cursor: grabbing;
+}
+
+.minimap-title-bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 700;
+  color: #94a3b8;
+  pointer-events: none;
+}
+
+.mm-drag-handle {
+  font-size: 11px;
+  color: #38bdf8;
+  opacity: 0.8;
+}
+
+.minimap-controls {
+  display: flex;
+  gap: 3px;
+  align-items: center;
+}
+
+.mm-btn {
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 6px;
+  color: #e2e8f0;
+  font-size: 10px;
+  font-weight: 500;
+  padding: 2px 5px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.15s ease;
+  line-height: 1.2;
+}
+
+.mm-btn:hover {
+  background: rgba(56, 189, 248, 0.25);
+  border-color: #38bdf8;
+  color: #ffffff;
+}
+
+.mm-btn.active, .mm-btn.highlight {
+  background: rgba(56, 189, 248, 0.35);
+  border-color: #38bdf8;
+  color: #38bdf8;
+}
+
+.mm-btn.hidden {
+  display: none !important;
+}
+
+.minimap-canvas-wrapper {
+  position: relative;
+  overflow: hidden;
+  border-radius: 14px;
+  cursor: grab;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #131822;
+  box-shadow: inset 0 0 10px rgba(0, 0, 0, 0.6);
+}
+
+.minimap-canvas-wrapper.is-panning {
+  cursor: grabbing !important;
+}
+
+#gta-minimap-canvas {
+  display: block;
+}
+
+.mm-zoom-level-badge {
+  position: absolute;
+  top: 6px;
+  left: 8px;
+  background: rgba(15, 23, 42, 0.8);
+  backdrop-filter: blur(4px);
+  border: 1px solid rgba(56, 189, 248, 0.3);
+  border-radius: 4px;
+  color: #38bdf8;
+  font-size: 9px;
+  font-weight: 700;
+  padding: 1px 5px;
+  pointer-events: none;
+  opacity: 0.85;
+  transition: opacity 0.3s ease;
+}
+
+.mm-pan-indicator {
+  position: absolute;
+  bottom: 6px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(234, 179, 8, 0.9);
+  color: #0f172a;
+  font-size: 9px;
+  font-weight: 700;
+  border-radius: 10px;
+  padding: 1px 8px;
+  pointer-events: none;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.5);
+  white-space: nowrap;
+  animation: pulse-pan 1.5s infinite alternate;
+}
+
+@keyframes pulse-pan {
+  0% { transform: translateX(-50%) scale(0.96); opacity: 0.85; }
+  100% { transform: translateX(-50%) scale(1.04); opacity: 1; }
+}
+
+.mm-pan-indicator.hidden {
+  display: none !important;
+}
+
+.minimap-street-badge {
+  margin-top: 6px;
+  background: rgba(15, 23, 42, 0.95);
+  border: 1px solid rgba(56, 189, 248, 0.3);
+  border-radius: 20px;
+  padding: 3px 12px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #f8fafc;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 90%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.5);
+}
+
+.street-pin-icon {
+  font-size: 11px;
+}
+
+.minimap-attribution {
+  margin-top: 4px;
+  font-size: 9px;
+  color: #64748b;
+  text-align: center;
+  letter-spacing: 0.2px;
+}
+
+/* 小地圖縮放手把 (右下角、右上角等) */
+.mm-resize-handle {
+  position: absolute;
+  z-index: 95;
+  user-select: none;
+}
+
+.mm-resize-br {
+  right: 0;
+  bottom: 0;
+  width: 14px;
+  height: 14px;
+  cursor: nwse-resize;
+}
+
+.mm-resize-br::after {
+  content: '';
+  position: absolute;
+  right: 4px;
+  bottom: 4px;
+  width: 5px;
+  height: 5px;
+  border-right: 2px solid rgba(56, 189, 248, 0.7);
+  border-bottom: 2px solid rgba(56, 189, 248, 0.7);
+}
+
+.mm-resize-tr {
+  right: 0;
+  top: 0;
+  width: 14px;
+  height: 14px;
+  cursor: nesw-resize;
+}
+
+.mm-resize-r {
+  right: 0;
+  top: 14px;
+  bottom: 14px;
+  width: 6px;
+  cursor: ew-resize;
+}
+
+.mm-resize-b {
+  bottom: 0;
+  left: 14px;
+  right: 14px;
+  height: 6px;
+  cursor: ns-resize;
+}
+
+/* ==========================================================================
+   GTA 風格全螢幕導航地圖 (Fullscreen Map Modal) 樣式
+   ========================================================================== */
+.gta-fullscreen-map-wrapper {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  z-index: 900;
+  background: #0f172a;
+  display: flex;
+  user-select: none;
+}
+
+.gta-fullscreen-map-wrapper.hidden {
+  display: none !important;
+}
+
+/* 左側邊欄 */
+.fs-map-sidebar {
+  width: 320px;
+  height: 100%;
+  background: rgba(15, 23, 42, 0.96);
+  backdrop-filter: blur(16px);
+  border-right: 1px solid rgba(56, 189, 248, 0.25);
+  display: flex;
+  flex-direction: column;
+  padding: 16px;
+  box-sizing: border-box;
+  overflow-y: auto;
+  z-index: 10;
+  box-shadow: 10px 0 30px rgba(0, 0, 0, 0.7);
+}
+
+.fs-sidebar-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.fs-sidebar-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 16px;
+  font-weight: 700;
+  color: #f8fafc;
+}
+
+.fs-close-btn {
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 8px;
+  color: #94a3b8;
+  font-size: 18px;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.fs-close-btn:hover {
+  background: rgba(239, 68, 68, 0.8);
+  border-color: #ef4444;
+  color: #ffffff;
+}
+
+/* 搜尋欄 */
+.fs-search-box {
+  position: relative;
+  margin-bottom: 16px;
+}
+
+#fs-search-input {
+  width: 100%;
+  background: rgba(30, 41, 59, 0.9);
+  border: 1px solid rgba(56, 189, 248, 0.35);
+  border-radius: 8px;
+  padding: 9px 12px;
+  font-size: 13px;
+  color: #ffffff;
+  outline: none;
+  box-sizing: border-box;
+  transition: border-color 0.15s ease;
+}
+
+#fs-search-input:focus {
+  border-color: #38bdf8;
+  box-shadow: 0 0 10px rgba(56, 189, 248, 0.3);
+}
+
+.fs-search-results {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  background: rgba(15, 23, 42, 0.98);
+  border: 1px solid rgba(56, 189, 248, 0.3);
+  border-radius: 8px;
+  margin-top: 4px;
+  max-height: 220px;
+  overflow-y: auto;
+  z-index: 20;
+  box-shadow: 0 10px 25px rgba(0, 0, 0, 0.8);
+}
+
+.fs-search-results.hidden {
+  display: none;
+}
+
+.fs-search-item {
+  padding: 8px 12px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.fs-search-item:hover {
+  background: rgba(56, 189, 248, 0.2);
+}
+
+.fs-item-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: #f1f5f9;
+}
+
+.fs-item-cat {
+  font-size: 11px;
+  color: #94a3b8;
+}
+
+.fs-search-empty {
+  padding: 12px;
+  font-size: 12px;
+  color: #94a3b8;
+  text-align: center;
+}
+
+/* 導航資訊卡片 */
+.fs-nav-card {
+  background: rgba(30, 41, 59, 0.7);
+  border: 1px solid rgba(244, 63, 94, 0.4);
+  border-radius: 10px;
+  padding: 12px;
+  margin-bottom: 16px;
+}
+
+.fs-nav-card.hidden {
+  display: none;
+}
+
+.fs-nav-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #f43f5e;
+  margin-bottom: 8px;
+}
+
+.fs-nav-stats {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.fs-stat-item {
+  display: flex;
+  flex-direction: column;
+}
+
+.fs-stat-label {
+  font-size: 10px;
+  color: #94a3b8;
+}
+
+.fs-stat-val {
+  font-size: 13px;
+  font-weight: 600;
+  color: #f8fafc;
+}
+
+.fs-nav-clear-btn {
+  width: 100%;
+  background: rgba(239, 68, 68, 0.2);
+  border: 1px solid rgba(239, 68, 68, 0.4);
+  color: #fca5a5;
+  border-radius: 6px;
+  padding: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.fs-nav-clear-btn:hover {
+  background: rgba(239, 68, 68, 0.4);
+  color: #ffffff;
+}
+
+/* 標記分類清單 */
+.fs-section-title {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 12px;
+  font-weight: 600;
+  color: #94a3b8;
+  margin-bottom: 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.fs-text-btn {
+  background: none;
+  border: none;
+  color: #38bdf8;
+  font-size: 11px;
+  cursor: pointer;
+  padding: 0;
+}
+
+.fs-text-btn:hover {
+  text-decoration: underline;
+}
+
+.fs-category-list {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  margin-bottom: 16px;
+}
+
+.fs-cat-checkbox-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: #cbd5e1;
+  cursor: pointer;
+  padding: 4px 6px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.03);
+  transition: background 0.15s ease;
+}
+
+.fs-cat-checkbox-item:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.fs-cat-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+/* 圖例 */
+.fs-legend-section {
+  margin-top: auto;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  padding-top: 12px;
+}
+
+.fs-legend-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 11px;
+  color: #94a3b8;
+}
+
+.fs-legend-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.legend-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.legend-line {
+  width: 14px;
+  height: 3px;
+  border-radius: 2px;
+}
+
+.legend-line.dashed {
+  border-top: 2px dashed #64748b;
+  height: 0;
+}
+
+/* 核心地圖畫布區塊 */
+.fs-map-canvas-container {
+  flex: 1;
+  position: relative;
+  height: 100%;
+  background: #131822;
+  overflow: hidden;
+  cursor: grab;
+}
+
+.fs-map-canvas-container:active {
+  cursor: grabbing;
+}
+
+#fs-map-canvas {
+  display: block;
+}
+
+/* 右下角工具按鈕 */
+.fs-map-tools {
+  position: absolute;
+  right: 20px;
+  bottom: 30px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  z-index: 10;
+}
+
+.fs-tool-btn {
+  background: rgba(15, 23, 42, 0.9);
+  border: 1px solid rgba(56, 189, 248, 0.35);
+  border-radius: 8px;
+  color: #f1f5f9;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 8px 12px;
+  cursor: pointer;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.6);
+  transition: all 0.15s ease;
+}
+
+.fs-tool-btn:hover {
+  background: rgba(56, 189, 248, 0.3);
+  border-color: #38bdf8;
+  color: #ffffff;
+}
+
+/* 右鍵快顯選單 */
+.fs-context-menu {
+  position: absolute;
+  background: rgba(15, 23, 42, 0.96);
+  border: 1px solid rgba(56, 189, 248, 0.5);
+  border-radius: 8px;
+  padding: 4px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.8);
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  min-width: 170px;
+}
+
+.fs-context-menu.hidden {
+  display: none;
+}
+
+.fs-menu-item {
+  padding: 8px 12px;
+  font-size: 13px;
+  color: #f1f5f9;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.fs-menu-item:hover {
+  background: rgba(56, 189, 248, 0.25);
+  color: #ffffff;
+}
+
+.fs-map-attribution {
+  position: absolute;
+  bottom: 8px;
+  right: 20px;
+  font-size: 10px;
+  color: #64748b;
+  pointer-events: none;
+  z-index: 5;
+}
+

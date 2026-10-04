@@ -59,6 +59,33 @@ export default defineConfig({
             res.end();
           }
         });
+
+        // 儲存建築人工校正檔端點 (F6 開發模式直接寫回磁碟)
+        server.middlewares.use('/api/save-override', (req, res) => {
+          if (req.method === 'POST') {
+            let body = '';
+            req.on('data', (chunk) => {
+              body += chunk;
+            });
+            req.on('end', async () => {
+              try {
+                const fs = await import('fs');
+                const path = await import('path');
+                const targetPath = path.resolve(process.cwd(), 'public/data/overrides.json');
+                fs.writeFileSync(targetPath, body, 'utf8');
+                res.setHeader('Content-Type', 'application/json');
+                res.end(JSON.stringify({ success: true, message: 'Successfully written to disk' }));
+              } catch (err: any) {
+                res.statusCode = 500;
+                res.setHeader('Content-Type', 'application/json');
+                res.end(JSON.stringify({ error: err.message }));
+              }
+            });
+          } else {
+            res.statusCode = 405;
+            res.end();
+          }
+        });
       }
     }
   ],

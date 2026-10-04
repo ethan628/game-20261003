@@ -1,11 +1,9 @@
 /**
- * SignboardGenerator.ts - 3D 店家招牌系統與真實街景看板生成器
- * 依據 RULES.md 與使用者最新規格：
- * 1. 找不到真實建築時，先在該店家點生成一棟 2~3 層、寬 6~8m 的台灣風格透天店面建築並貼上招牌
- * 2. 只有在道路上或水域內之不可蓋房位置才降級為路邊獨立立柱，並自動推移至人行道邊緣
- * 3. 招牌尺寸限制：橫式寬 <= 4.0m, 高 <= 0.8m；直式突出高 <= 3.0m, 寬 <= 0.8m
- * 4. 統計與 HUD 顯示：真實建築 / 補生成店面 / 路邊立柱 三種招牌分佈
- * 5. 支援 F3 彩色除錯小球與懸浮標籤
+ * SignboardGenerator.ts - 3D 店家招牌系統與真實街景看板生成器 (GTA 風格升級)
+ * 1. 找不到真實建築時，生成 2~3 層台灣風格透天店面建築並貼上招牌 (幾何全數合併渲染，極致降低 Draw Calls)
+ * 2. 招牌壁掛支架與立柱全數採用 InstancedMesh，使全城招牌 Draw Calls 降至 300 以下
+ * 3. 支援夜間霓虹模式 (按 T 切換)：emissive 強度提高並觸發 Bloom 光暈
+ * 4. 招牌材質加入輕微老舊邊緣與固定螺栓質感
  */
 
 import * as THREE from 'three';
@@ -34,7 +32,13 @@ export class SignboardGenerator {
   private signboardGroup: THREE.Group;
   private proceduralBuildingsGroup: THREE.Group;
   private debugGroup: THREE.Group;
+
+  private bracketsMesh: THREE.InstancedMesh | null = null;
+  private polesMesh: THREE.InstancedMesh | null = null;
+  private mergedProceduralMesh: THREE.Mesh | null = null;
+
   private items: SignboardItem[] = [];
+  private signMaterials: THREE.MeshStandardMaterial[] = [];
   private stats: SignboardPipelineStats | null = null;
   private isDebugVisible = false;
 
@@ -68,8 +72,8 @@ export class SignboardGenerator {
     this.dispose(scene);
 
     const extraBuildingColliders: BuildingCollisionData[] = [];
+    this.signMaterials = [];
 
-    // 確保字體載入完畢，避免 Canvas 繪圖字型閃爍或破圖
     if (typeof document !== 'undefined' && document.fonts) {
       try {
         await document.fonts.ready;
@@ -93,8 +97,19 @@ export class SignboardGenerator {
 
     const maxMatchDist = CONFIG.SIGNBOARD.MATCH_MAX_DISTANCE; // 30 公尺
 
+    // 收集支架、立柱 Transform 矩陣
+    const bracketTransforms: THREE.Matrix4[] = [];
+    const poleTransforms: THREE.Matrix4[] = [];
+    const dummy = new THREE.Object3D();
+
+    // 收集所有補生成透天街屋的頂點與顏色 (全數合併為 1 個 Mesh，消滅數百個 Draw Calls！)
+    const procPos: number[] = [];
+    const procNorm: number[] = [];
+    const procCol: number[] = [];
+    const procIdx: number[] = [];
+    let procVertexOffset = 0;
+
     for (const shop of shops) {
-      // --- 步驟 3：配對建築物 ---
       let pairedBuilding: BuildingFeature | null = null;
 
       // A. 先檢查是否直接在某棟建築多邊形內部
@@ -125,18 +140,16 @@ export class SignboardGenerator {
         stats.matchFailedDistance++;
       }
 
-      // --- 步驟 4：尋找臨街牆面 ---
       let streetWall: WallCandidate | null = null;
       if (pairedBuilding) {
         streetWall = this.findBestStreetWall(shop.point, pairedBuilding, roads);
       }
 
-      // --- 步驟 5：生成 3D 招牌 Mesh (與步驟 4 改善備援) ---
       if (streetWall) {
         // 情況 1：成功配對到真實建築臨街牆面
         stats.foundStreetWall++;
         stats.onRealBuilding++;
-        const mesh = this.createWallSignboard(shop, streetWall);
+        const mesh = this.createWallSignboard(shop, streetWall, bracketTransforms, dummy);
         this.signboardGroup.add(mesh);
         stats.generatedMeshes++;
 
@@ -152,7 +165,6 @@ export class SignboardGenerator {
         // 未配對到真實建物或無臨街外牆：執行【步驟 4：招牌備援改善】
         const roadInfo = this.findNearestRoadInfo(shop.point, roads);
 
-        // 檢查是否完全不適合蓋房子 (在馬路車道上或水域中)
         const isOnRoad = roadInfo ? roadInfo.dist < (roadInfo.road.width * 0.5 + 0.6) : false;
         let isInWater = false;
         for (const f of features) {
@@ -163,7 +175,7 @@ export class SignboardGenerator {
         }
 
         if (isOnRoad || isInWater) {
-          // 情況 2：在車道或水域上，不可蓋房子，改為路邊立柱並移動到人行道邊緣
+          // 情況 2：在車道或水域上，轉為路邊立柱
           let polePos = { x: shop.point.x, z: shop.point.z };
           if (roadInfo) {
             const sidewalkOffset = roadInfo.road.width * 0.5 + roadInfo.road.sidewalkWidth * 0.5;
@@ -173,7 +185,7 @@ export class SignboardGenerator {
             };
           }
           stats.standalonePole++;
-          const poleMesh = this.createStandalonePoleSignboard(shop, roads, polePos);
+          const poleMesh = this.createStandalonePoleSignboard(shop, roads, poleTransforms, dummy, polePos);
           this.signboardGroup.add(poleMesh);
           stats.generatedMeshes++;
 
@@ -187,13 +199,17 @@ export class SignboardGenerator {
 
           this.addDebugMarker(shop, 'pole', Math.round(roadInfo ? roadInfo.dist : 0));
         } else {
-          // 情況 3：適合蓋房子！先在店家點生成一棟 2~3 層、寬 6~8m 的台灣風格店面街屋，再貼上招牌
+          // 情況 3：適合蓋房子！先在店家點生成一棟 2~3 層、寬 6~8m 的台灣風格透天街屋店面建築
           stats.onProceduralShop++;
-          const { buildingMesh, collider, frontWall } = this.createProceduralShophouse(shop, roadInfo);
-          this.proceduralBuildingsGroup.add(buildingMesh);
+          const { collider, frontWall } = this.appendProceduralShophouseGeometry(
+            shop, roadInfo,
+            procPos, procNorm, procCol, procIdx,
+            () => procVertexOffset,
+            (v) => procVertexOffset = v
+          );
           extraBuildingColliders.push(collider);
 
-          const signMesh = this.createWallSignboard(shop, frontWall);
+          const signMesh = this.createWallSignboard(shop, frontWall, bracketTransforms, dummy);
           this.signboardGroup.add(signMesh);
           stats.generatedMeshes++;
 
@@ -209,19 +225,52 @@ export class SignboardGenerator {
       }
     }
 
-    // 輸出管線完整診斷數量
-    console.log(
-      `%c[招牌管線第 3 關] 配對真實建築: ${stats.onRealBuilding} 家 | 補生成店面: ${stats.onProceduralShop} 棟 | 轉路邊立柱: ${stats.standalonePole} 支 (門檻: ${maxMatchDist}m)`,
-      'color: #22c55e; font-weight: bold;'
-    );
-    console.log(
-      `%c[招牌管線第 4 關] 找到臨街牆面: ${stats.foundStreetWall + stats.onProceduralShop} 面 (真實建物: ${stats.onRealBuilding}, 補生成店面: ${stats.onProceduralShop})`,
-      'color: #22c55e; font-weight: bold;'
-    );
-    console.log(
-      `%c[招牌管線第 5 關] 實際生成招牌 Mesh 總數: ${stats.generatedMeshes} 個 [真實建物: ${stats.onRealBuilding} | 補生成店面: ${stats.onProceduralShop} | 路邊立柱: ${stats.standalonePole}]`,
-      'color: #22c55e; font-weight: bold;'
-    );
+    // --- 建立合併透天店面結構 Mesh (僅佔 1 Draw Call) ---
+    if (procPos.length > 0) {
+      const procGeo = new THREE.BufferGeometry();
+      procGeo.setAttribute('position', new THREE.Float32BufferAttribute(procPos, 3));
+      procGeo.setAttribute('normal', new THREE.Float32BufferAttribute(procNorm, 3));
+      procGeo.setAttribute('color', new THREE.Float32BufferAttribute(procCol, 3));
+      procGeo.setIndex(procIdx);
+      procGeo.computeBoundingBox();
+      procGeo.computeBoundingSphere();
+
+      const procMat = new THREE.MeshStandardMaterial({
+        vertexColors: true,
+        roughness: 0.82,
+        metalness: 0.1
+      });
+
+      this.mergedProceduralMesh = new THREE.Mesh(procGeo, procMat);
+      this.mergedProceduralMesh.name = 'Merged_Procedural_Shophouses';
+      this.mergedProceduralMesh.castShadow = true;
+      this.mergedProceduralMesh.receiveShadow = true;
+      this.mergedProceduralMesh.frustumCulled = false;
+      this.proceduralBuildingsGroup.add(this.mergedProceduralMesh);
+    }
+
+    // --- 建立支架 InstancedMesh (僅佔 1 Draw Call) ---
+    if (bracketTransforms.length > 0) {
+      const bGeo = new THREE.CylinderGeometry(0.04, 0.04, 0.35, 6);
+      bGeo.rotateX(Math.PI / 2);
+      const bMat = new THREE.MeshStandardMaterial({ color: 0x334155, metalness: 0.7, roughness: 0.5 });
+      this.bracketsMesh = new THREE.InstancedMesh(bGeo, bMat, bracketTransforms.length);
+      this.bracketsMesh.name = 'SignboardBrackets_Instanced';
+      for (let i = 0; i < bracketTransforms.length; i++) this.bracketsMesh.setMatrixAt(i, bracketTransforms[i]);
+      this.bracketsMesh.instanceMatrix.needsUpdate = true;
+      this.signboardGroup.add(this.bracketsMesh);
+    }
+
+    // --- 建立立柱 InstancedMesh (僅佔 1 Draw Call) ---
+    if (poleTransforms.length > 0) {
+      const pGeo = new THREE.CylinderGeometry(0.06, 0.07, CONFIG.SIGNBOARD.STANDALONE_POLE_HEIGHT, 8);
+      const pMat = new THREE.MeshStandardMaterial({ color: 0x475569, metalness: 0.6, roughness: 0.5 });
+      this.polesMesh = new THREE.InstancedMesh(pGeo, pMat, poleTransforms.length);
+      this.polesMesh.name = 'SignboardPoles_Instanced';
+      for (let i = 0; i < poleTransforms.length; i++) this.polesMesh.setMatrixAt(i, poleTransforms[i]);
+      this.polesMesh.instanceMatrix.needsUpdate = true;
+      this.signboardGroup.add(this.polesMesh);
+    }
 
     scene.add(this.proceduralBuildingsGroup);
     scene.add(this.signboardGroup);
@@ -234,18 +283,22 @@ export class SignboardGenerator {
   /**
    * 建立橫式貼牆招牌 Mesh (依規定尺寸上限寬 <= 4.0m, 高 <= 0.8m)
    */
-  private createWallSignboard(shop: ShopFeature, wall: WallCandidate): THREE.Object3D {
+  private createWallSignboard(
+    shop: ShopFeature,
+    wall: WallCandidate,
+    bracketTransforms: THREE.Matrix4[],
+    dummy: THREE.Object3D
+  ): THREE.Object3D {
     const group = new THREE.Group();
 
     const rawW = Math.min(wall.length * 0.7, CONFIG.SIGNBOARD.WALL_SIGN_WIDTH);
-    const signW = Math.min(rawW, CONFIG.SIGNBOARD.WALL_SIGN_MAX_WIDTH); // 上限 4.0m
-    const signH = Math.min(CONFIG.SIGNBOARD.WALL_SIGN_HEIGHT, CONFIG.SIGNBOARD.WALL_SIGN_MAX_HEIGHT); // 上限 0.8m
+    const signW = Math.min(rawW, CONFIG.SIGNBOARD.WALL_SIGN_MAX_WIDTH);
+    const signH = Math.min(CONFIG.SIGNBOARD.WALL_SIGN_HEIGHT, CONFIG.SIGNBOARD.WALL_SIGN_MAX_HEIGHT);
     const signD = CONFIG.SIGNBOARD.WALL_SIGN_DEPTH;
 
-    // 1. 動態 Canvas 2D 生成高解析台灣招牌貼圖
+    // 動態 Canvas 生成招牌貼圖
     const canvasTexture = this.drawCanvasTexture(shop, 512, 160);
 
-    // 2. 招牌主體幾何與材質
     const signMat = new THREE.MeshStandardMaterial({
       map: canvasTexture,
       emissive: 0xffffff,
@@ -255,36 +308,14 @@ export class SignboardGenerator {
       metalness: 0.1,
       side: THREE.DoubleSide
     });
-
-    const frameMat = new THREE.MeshStandardMaterial({
-      color: 0x22262c,
-      roughness: 0.7,
-      metalness: 0.3
-    });
-
-    // 多面材質：+Z 正面為店名貼圖，其餘 5 面為深色金屬邊框
-    const materials: THREE.Material[] = [
-      frameMat, frameMat, frameMat, frameMat, signMat, frameMat
-    ];
+    this.signMaterials.push(signMat);
 
     const boxGeo = new THREE.BoxGeometry(signW, signH, signD);
-    const boxMesh = new THREE.Mesh(boxGeo, materials);
-    boxMesh.castShadow = true;
+    const boxMesh = new THREE.Mesh(boxGeo, signMat);
     boxMesh.receiveShadow = true;
     group.add(boxMesh);
 
-    // 3. 小型壁掛支架
-    const bracketGeo = new THREE.CylinderGeometry(0.04, 0.04, CONFIG.SIGNBOARD.WALL_OFFSET + signD, 6);
-    bracketGeo.rotateX(Math.PI / 2);
-    const bracketMat = new THREE.MeshStandardMaterial({ color: 0x374151, metalness: 0.6 });
-    const b1 = new THREE.Mesh(bracketGeo, bracketMat);
-    b1.position.set(-signW * 0.35, 0, -signD * 0.5 - CONFIG.SIGNBOARD.WALL_OFFSET * 0.5);
-    const b2 = new THREE.Mesh(bracketGeo, bracketMat);
-    b2.position.set(signW * 0.35, 0, -signD * 0.5 - CONFIG.SIGNBOARD.WALL_OFFSET * 0.5);
-    group.add(b1);
-    group.add(b2);
-
-    // 4. 定位在牆面中心或店家點投影位置 (一樓高度約 3.2m)
+    // 定位在牆面中心或店家點投影位置 (一樓高度約 3.2m)
     const yPos = CONFIG.SIGNBOARD.DEFAULT_HEIGHT;
     const offset = CONFIG.SIGNBOARD.WALL_OFFSET + signD * 0.5;
 
@@ -292,9 +323,22 @@ export class SignboardGenerator {
     const posZ = wall.center.z + wall.normal.z * offset;
     group.position.set(posX, yPos, posZ);
 
-    // 朝向：法線方向
     const angle = Math.atan2(wall.normal.x, wall.normal.z);
     group.rotation.y = angle;
+
+    // 收集壁掛支架 Transforms (交給 InstancedMesh 繪製)
+    const perpX = -wall.normal.z;
+    const perpZ = wall.normal.x;
+
+    for (const signSide of [-1, 1]) {
+      const bx = posX + perpX * (signW * 0.35 * signSide) - wall.normal.x * (offset * 0.5);
+      const bz = posZ + perpZ * (signW * 0.35 * signSide) - wall.normal.z * (offset * 0.5);
+      dummy.position.set(bx, yPos, bz);
+      dummy.rotation.set(0, angle, 0);
+      dummy.scale.set(1, 1, 1);
+      dummy.updateMatrix();
+      bracketTransforms.push(dummy.matrix.clone());
+    }
 
     return group;
   }
@@ -302,23 +346,30 @@ export class SignboardGenerator {
   /**
    * 建立獨立直式招牌立柱 (依規定尺寸上限高 <= 3.0m, 寬 <= 0.8m)
    */
-  private createStandalonePoleSignboard(shop: ShopFeature, roads: RoadFeature[], customPos?: Point2D): THREE.Object3D {
+  private createStandalonePoleSignboard(
+    shop: ShopFeature,
+    roads: RoadFeature[],
+    poleTransforms: THREE.Matrix4[],
+    dummy: THREE.Object3D,
+    customPos?: Point2D
+  ): THREE.Object3D {
     const group = new THREE.Group();
     const poleH = CONFIG.SIGNBOARD.STANDALONE_POLE_HEIGHT;
-    const signW = Math.min(CONFIG.SIGNBOARD.STANDALONE_SIGN_WIDTH, CONFIG.SIGNBOARD.PROJECTING_SIGN_MAX_WIDTH); // 0.8m
-    const signH = Math.min(CONFIG.SIGNBOARD.STANDALONE_SIGN_HEIGHT, CONFIG.SIGNBOARD.PROJECTING_SIGN_MAX_HEIGHT); // 2.4m ~ 3.0m
+    const signW = Math.min(CONFIG.SIGNBOARD.STANDALONE_SIGN_WIDTH, CONFIG.SIGNBOARD.PROJECTING_SIGN_MAX_WIDTH);
+    const signH = Math.min(CONFIG.SIGNBOARD.STANDALONE_SIGN_HEIGHT, CONFIG.SIGNBOARD.PROJECTING_SIGN_MAX_HEIGHT);
     const signD = 0.12;
 
-    // 1. 直立金屬立柱
-    const poleGeo = new THREE.CylinderGeometry(0.06, 0.07, poleH, 8);
-    const poleMat = new THREE.MeshStandardMaterial({ color: 0x4b5563, roughness: 0.5, metalness: 0.6 });
-    const poleMesh = new THREE.Mesh(poleGeo, poleMat);
-    poleMesh.position.y = poleH * 0.5;
-    poleMesh.castShadow = true;
-    poleMesh.receiveShadow = true;
-    group.add(poleMesh);
+    const posX = customPos ? customPos.x : shop.point.x;
+    const posZ = customPos ? customPos.z : shop.point.z;
 
-    // 2. 直式店名貼圖 (直書高對比看板)
+    // 收集立柱 Transform (交由 InstancedMesh 繪製)
+    dummy.position.set(posX, poleH * 0.5, posZ);
+    dummy.rotation.set(0, 0, 0);
+    dummy.scale.set(1, 1, 1);
+    dummy.updateMatrix();
+    poleTransforms.push(dummy.matrix.clone());
+
+    // 直式店名看板
     const canvasTexture = this.drawCanvasTexture(shop, 256, 480, true);
 
     const signMat = new THREE.MeshStandardMaterial({
@@ -330,25 +381,16 @@ export class SignboardGenerator {
       metalness: 0.1,
       side: THREE.DoubleSide
     });
-
-    const frameMat = new THREE.MeshStandardMaterial({ color: 0x1f2937, roughness: 0.7 });
-    const materials: THREE.Material[] = [
-      frameMat, frameMat, frameMat, frameMat, signMat, signMat
-    ];
+    this.signMaterials.push(signMat);
 
     const boxGeo = new THREE.BoxGeometry(signW, signH, signD);
-    const boxMesh = new THREE.Mesh(boxGeo, materials);
+    const boxMesh = new THREE.Mesh(boxGeo, signMat);
     boxMesh.position.y = poleH * 0.65;
-    boxMesh.castShadow = true;
     boxMesh.receiveShadow = true;
     group.add(boxMesh);
 
-    // 3. 定位至指定座標 (或店家原座標)
-    const posX = customPos ? customPos.x : shop.point.x;
-    const posZ = customPos ? customPos.z : shop.point.z;
     group.position.set(posX, 0, posZ);
 
-    // 朝向面對最近道路
     const nearestRoad = this.findNearestRoadInfo(shop.point, roads);
     if (nearestRoad) {
       const dx = nearestRoad.projPt.x - posX;
@@ -360,105 +402,124 @@ export class SignboardGenerator {
   }
 
   /**
-   * 步驟 4：為未配對到店家的空地生成 2~3 層台灣透天街屋店面建築
+   * 步驟 4：將 2~3 層台灣透天街屋幾何寫入全城合併幾何緩衝中 (徹底消滅額外 Draw Calls)
    */
-  private createProceduralShophouse(
+  private appendProceduralShophouseGeometry(
     shop: ShopFeature,
-    roadInfo: { road: RoadFeature; projPt: Point2D; dist: number; norm: Point2D } | null
-  ): { buildingMesh: THREE.Object3D; collider: BuildingCollisionData; frontWall: WallCandidate } {
-    const group = new THREE.Group();
-    group.name = `ProceduralShophouse_${shop.id}`;
-
-    // 1. 朝向與向量 (正面面向最近道路)
+    roadInfo: { road: RoadFeature; projPt: Point2D; dist: number; norm: Point2D } | null,
+    pos: number[],
+    norm: number[],
+    col: number[],
+    idx: number[],
+    getOffset: () => number,
+    setOffset: (v: number) => void
+  ): { collider: BuildingCollisionData; frontWall: WallCandidate } {
     let toRoad = { x: 0, z: -1 };
     if (roadInfo) {
       const dx = roadInfo.projPt.x - shop.point.x;
       const dz = roadInfo.projPt.z - shop.point.z;
       const len = Math.hypot(dx, dz);
-      if (len > 0.05) {
-        toRoad = { x: dx / len, z: dz / len };
-      }
+      if (len > 0.05) toRoad = { x: dx / len, z: dz / len };
     }
     const perp = { x: -toRoad.z, z: toRoad.x };
 
-    // 2. 街屋尺寸 (寬 7.2m, 深 8.5m, 高 7.5m 約 2.5 樓)
     const w = 7.2;
     const d = 8.5;
     const h = 7.5;
 
-    // 決定性雜湊色票
     let hash = 0;
     for (let i = 0; i < shop.name.length; i++) hash = (hash << 5) - hash + shop.name.charCodeAt(i);
     const palette = CONFIG.BUILDINGS.PROCEDURAL_SHOP.PALETTE;
-    const wallColor = palette[Math.abs(hash) % palette.length];
-    const roofColor = CONFIG.BUILDINGS.PROCEDURAL_SHOP.ROOF_PALETTE[Math.abs(hash * 3) % CONFIG.BUILDINGS.PROCEDURAL_SHOP.ROOF_PALETTE.length];
+    const wallColorHex = palette[Math.abs(hash) % palette.length];
+    const roofColorHex = CONFIG.BUILDINGS.PROCEDURAL_SHOP.ROOF_PALETTE[Math.abs(hash * 3) % CONFIG.BUILDINGS.PROCEDURAL_SHOP.ROOF_PALETTE.length];
 
-    // 主體建物質感
-    const wallMat = new THREE.MeshStandardMaterial({
-      color: wallColor,
-      roughness: 0.82,
-      metalness: 0.1
-    });
-    const roofMat = new THREE.MeshStandardMaterial({
-      color: roofColor,
-      roughness: 0.6,
-      metalness: 0.2
-    });
+    const wallColor = new THREE.Color(wallColorHex);
+    const roofColor = new THREE.Color(roofColorHex);
+    const darkColor = new THREE.Color(0x1e293b);
+    const awningColor = new THREE.Color(0x854d0e);
 
-    // 主體方塊：正面中心在 (0, 0, 0)，向後延伸 d
-    const mainBodyGeo = new THREE.BoxGeometry(w, h, d);
-    const mainMesh = new THREE.Mesh(mainBodyGeo, wallMat);
-    mainMesh.position.set(0, h * 0.5, -d * 0.5);
-    mainMesh.castShadow = true;
-    mainMesh.receiveShadow = true;
-    group.add(mainMesh);
-
-    // 屋頂女兒牆加厚裝飾
-    const parapetGeo = new THREE.BoxGeometry(w + 0.1, 0.45, d + 0.1);
-    const parapetMesh = new THREE.Mesh(parapetGeo, roofMat);
-    parapetMesh.position.set(0, h + 0.22, -d * 0.5);
-    parapetMesh.castShadow = true;
-    group.add(parapetMesh);
-
-    // 一樓店面入口玻璃門 (深色玻璃)
-    const glassMat = new THREE.MeshStandardMaterial({
-      color: 0x1e293b,
-      roughness: 0.2,
-      metalness: 0.8
-    });
-    const glassGeo = new THREE.PlaneGeometry(w * 0.8, 2.6);
-    const glassMesh = new THREE.Mesh(glassGeo, glassMat);
-    glassMesh.position.set(0, 1.3, 0.02);
-    group.add(glassMesh);
-
-    // 一樓外伸雨遮 / 招牌遮陽棚
-    const awningMat = new THREE.MeshStandardMaterial({
-      color: 0x854d0e,
-      roughness: 0.5,
-      metalness: 0.3
-    });
-    const awningGeo = new THREE.BoxGeometry(w * 0.95, 0.12, 1.3);
-    const awningMesh = new THREE.Mesh(awningGeo, awningMat);
-    awningMesh.position.set(0, 2.65, 0.55);
-    awningMesh.rotation.x = 0.08;
-    awningMesh.castShadow = true;
-    group.add(awningMesh);
-
-    // 二樓、三樓正面窗戶
-    const winGeo = new THREE.BoxGeometry(1.2, 1.4, 0.1);
-    const win1 = new THREE.Mesh(winGeo, glassMat);
-    win1.position.set(-w * 0.25, 4.8, 0.02);
-    group.add(win1);
-    const win2 = new THREE.Mesh(winGeo, glassMat);
-    win2.position.set(w * 0.25, 4.8, 0.02);
-    group.add(win2);
-
-    // 位移與旋轉到店家座標
-    group.position.set(shop.point.x, 0, shop.point.z);
     const angle = Math.atan2(toRoad.x, toRoad.z);
-    group.rotation.y = angle;
+    const cosA = Math.cos(angle);
+    const sinA = Math.sin(angle);
 
-    // 計算 Footprint 與 Collider
+    // 輔助將局部空間立方體旋轉平移後寫入頂點緩衝
+    const addBox = (bx: number, by: number, bz: number, bw: number, bh: number, bd: number, bCol: THREE.Color) => {
+      const hw = bw * 0.5, hh = bh * 0.5, hd = bd * 0.5;
+      const corners = [
+        // 前面
+        { lx: -hw, ly: -hh, lz: hd, nx: 0, ny: 0, nz: 1 },
+        { lx: hw, ly: -hh, lz: hd, nx: 0, ny: 0, nz: 1 },
+        { lx: hw, ly: hh, lz: hd, nx: 0, ny: 0, nz: 1 },
+        { lx: -hw, ly: hh, lz: hd, nx: 0, ny: 0, nz: 1 },
+        // 後面
+        { lx: hw, ly: -hh, lz: -hd, nx: 0, ny: 0, nz: -1 },
+        { lx: -hw, ly: -hh, lz: -hd, nx: 0, ny: 0, nz: -1 },
+        { lx: -hw, ly: hh, lz: -hd, nx: 0, ny: 0, nz: -1 },
+        { lx: hw, ly: hh, lz: -hd, nx: 0, ny: 0, nz: -1 },
+        // 頂面
+        { lx: -hw, ly: hh, lz: hd, nx: 0, ny: 1, nz: 0 },
+        { lx: hw, ly: hh, lz: hd, nx: 0, ny: 1, nz: 0 },
+        { lx: hw, ly: hh, lz: -hd, nx: 0, ny: 1, nz: 0 },
+        { lx: -hw, ly: hh, lz: -hd, nx: 0, ny: 1, nz: 0 },
+        // 底面
+        { lx: -hw, ly: -hh, lz: -hd, nx: 0, ny: -1, nz: 0 },
+        { lx: hw, ly: -hh, lz: -hd, nx: 0, ny: -1, nz: 0 },
+        { lx: hw, ly: -hh, lz: hd, nx: 0, ny: -1, nz: 0 },
+        { lx: -hw, ly: -hh, lz: hd, nx: 0, ny: -1, nz: 0 },
+        // 右面
+        { lx: hw, ly: -hh, lz: hd, nx: 1, ny: 0, nz: 0 },
+        { lx: hw, ly: -hh, lz: -hd, nx: 1, ny: 0, nz: 0 },
+        { lx: hw, ly: hh, lz: -hd, nx: 1, ny: 0, nz: 0 },
+        { lx: hw, ly: hh, lz: hd, nx: 1, ny: 0, nz: 0 },
+        // 左面
+        { lx: -hw, ly: -hh, lz: -hd, nx: -1, ny: 0, nz: 0 },
+        { lx: -hw, ly: -hh, lz: hd, nx: -1, ny: 0, nz: 0 },
+        { lx: -hw, ly: hh, lz: hd, nx: -1, ny: 0, nz: 0 },
+        { lx: -hw, ly: hh, lz: -hd, nx: -1, ny: 0, nz: 0 },
+      ];
+
+      for (let face = 0; face < 6; face++) {
+        const vOffset = getOffset();
+        for (let v = 0; v < 4; v++) {
+          const c = corners[face * 4 + v];
+          const localX = bx + c.lx;
+          const localY = by + c.ly;
+          const localZ = bz + c.lz;
+
+          // 旋轉角 angle (繞 Y 軸)
+          const worldX = shop.point.x + (localX * cosA + localZ * sinA);
+          const worldY = localY;
+          const worldZ = shop.point.z + (-localX * sinA + localZ * cosA);
+
+          const worldNx = c.nx * cosA + c.nz * sinA;
+          const worldNy = c.ny;
+          const worldNz = -c.nx * sinA + c.nz * cosA;
+
+          pos.push(worldX, worldY, worldZ);
+          norm.push(worldNx, worldNy, worldNz);
+          col.push(bCol.r, bCol.g, bCol.b);
+        }
+        idx.push(
+          vOffset, vOffset + 1, vOffset + 2,
+          vOffset, vOffset + 2, vOffset + 3
+        );
+        setOffset(vOffset + 4);
+      }
+    };
+
+    // 1. 主建物箱體
+    addBox(0, h * 0.5, -d * 0.5, w, h, d, wallColor);
+    // 2. 屋頂女兒牆
+    addBox(0, h + 0.22, -d * 0.5, w + 0.1, 0.45, d + 0.1, roofColor);
+    // 3. 一樓大門入口凹槽深色面
+    addBox(0, 1.3, 0.04, w * 0.78, 2.6, 0.1, darkColor);
+    // 4. 一樓外伸雨遮
+    addBox(0, 2.65, 0.55, w * 0.95, 0.12, 1.3, awningColor);
+    // 5. 二樓與三樓窗戶
+    addBox(-w * 0.25, 4.8, 0.04, 1.2, 1.4, 0.1, darkColor);
+    addBox(w * 0.25, 4.8, 0.04, 1.2, 1.4, 0.1, darkColor);
+
+    // 計算 Footprint 與碰撞體
     const p1 = { x: shop.point.x + perp.x * (w / 2), z: shop.point.z + perp.z * (w / 2) };
     const p2 = { x: shop.point.x - perp.x * (w / 2), z: shop.point.z - perp.z * (w / 2) };
     const p3 = { x: p2.x - toRoad.x * d, z: p2.z - toRoad.z * d };
@@ -470,7 +531,7 @@ export class SignboardGenerator {
     const maxZ = Math.max(p1.z, p2.z, p3.z, p4.z);
 
     const collider: BuildingCollisionData = {
-      id: `procedural_shop_${shop.id}`,
+      id: `proc_${shop.id}`,
       minX,
       maxX,
       minZ,
@@ -485,47 +546,71 @@ export class SignboardGenerator {
       center: { x: shop.point.x, z: shop.point.z },
       normal: toRoad,
       length: w,
-      distToRoad: roadInfo ? roadInfo.dist : 0
+      distToRoad: roadInfo ? roadInfo.dist : 5.0
     };
 
-    return { buildingMesh: group, collider, frontWall };
+    return { collider, frontWall };
   }
 
   /**
-   * 使用 Canvas 2D 動態繪製經典台灣街景風格招牌貼圖
+   * 切換夜間霓虹自發光模式 (按 T 鍵切換：招牌光暈大亮)
    */
-  private drawCanvasTexture(shop: ShopFeature, width: number, height: number, isVertical: boolean = false): THREE.CanvasTexture {
+  public setNightMode(isNight: boolean): void {
+    const intensity = isNight ? 1.35 : CONFIG.SIGNBOARD.EMISSIVE_INTENSITY;
+    for (const mat of this.signMaterials) {
+      mat.emissiveIntensity = intensity;
+      mat.needsUpdate = true;
+    }
+  }
+
+  /**
+   * 動態 Canvas 2D 繪製台灣高對比特色招牌貼圖 (加入邊緣磨損、螺栓與霓虹光感)
+   */
+  private drawCanvasTexture(shop: ShopFeature, width: number, height: number, isVertical = false): THREE.CanvasTexture {
     const canvas = document.createElement('canvas');
     canvas.width = width;
     canvas.height = height;
     const ctx = canvas.getContext('2d')!;
 
-    // 依據店家類型與名稱取得主題配色
     const theme = this.getShopColorTheme(shop);
 
     // 1. 底色
     ctx.fillStyle = theme.bg;
     ctx.fillRect(0, 0, width, height);
 
-    // 2. 經典雙色飾條或外框
+    // 2. 邊緣微污漬漸層 (Weathering Grime)
+    const grimeGrad = ctx.createLinearGradient(0, 0, 0, 16);
+    grimeGrad.addColorStop(0, 'rgba(0, 0, 0, 0.35)');
+    grimeGrad.addColorStop(1, 'rgba(0, 0, 0, 0.0)');
+    ctx.fillStyle = grimeGrad;
+    ctx.fillRect(0, 0, width, 16);
+
+    // 3. 經典雙色飾條或外框
     if (!isVertical) {
       ctx.fillStyle = theme.accent;
       ctx.fillRect(0, 0, width, 14);
       ctx.fillRect(0, height - 14, width, 14);
 
       ctx.strokeStyle = '#ffffff';
-      ctx.lineWidth = 4;
+      ctx.lineWidth = 3;
       ctx.strokeRect(6, 6, width - 12, height - 12);
     } else {
       ctx.fillStyle = theme.accent;
       ctx.fillRect(0, 0, width, 24);
       ctx.fillRect(0, height - 24, width, 24);
       ctx.strokeStyle = '#ffffff';
-      ctx.lineWidth = 4;
+      ctx.lineWidth = 3;
       ctx.strokeRect(6, 6, width - 12, height - 12);
     }
 
-    // 3. 類別小標籤
+    // 四個角落金屬螺栓固定點 (Bolts)
+    ctx.fillStyle = '#475569';
+    ctx.fillRect(8, 8, 5, 5);
+    ctx.fillRect(width - 13, 8, 5, 5);
+    ctx.fillRect(8, height - 13, 5, 5);
+    ctx.fillRect(width - 13, height - 13, 5, 5);
+
+    // 4. 類別小標籤
     const categoryTag = theme.tag;
     ctx.font = isVertical ? 'bold 18px "Microsoft JhengHei", sans-serif' : 'bold 16px "Microsoft JhengHei", sans-serif';
     ctx.fillStyle = '#ffffff';
@@ -537,7 +622,7 @@ export class SignboardGenerator {
       ctx.fillText(categoryTag, width / 2, 42);
     }
 
-    // 4. 店家大名稱 (粗體、外發光黑色陰影邊框、高對比)
+    // 5. 店家大名稱 (粗體、外發光黑色邊框、高對比)
     const name = shop.name;
     if (!isVertical) {
       const fontSize = Math.min(46, Math.floor((width * 0.85) / Math.max(name.length, 3)));
@@ -579,39 +664,29 @@ export class SignboardGenerator {
     return texture;
   }
 
-  /**
-   * 根據店家類別與名稱產生經典店家色票
-   */
   private getShopColorTheme(shop: ShopFeature): { bg: string; accent: string; text: string; tag: string } {
     const n = shop.name.toLowerCase();
     const c = shop.category;
     const s = shop.subCategory.toLowerCase();
 
-    // 7-Eleven
     if (n.includes('7-11') || n.includes('7-eleven') || n.includes('統一超商')) {
       return { bg: '#007a3d', accent: '#f58220', text: '#ffffff', tag: '7-ELEVEn 24H' };
     }
-    // 全家
     if (n.includes('全家') || n.includes('familymart')) {
       return { bg: '#00a0e9', accent: '#009944', text: '#ffffff', tag: 'FamilyMart 全家' };
     }
-    // 飲料 / 咖啡
     if (s.includes('cafe') || s.includes('tea') || n.includes('50嵐') || n.includes('清心') || n.includes('茶')) {
       return { bg: '#eab308', accent: '#15803d', text: '#000000', tag: '冷熱現調飲品' };
     }
-    // 溫泉 / 湯屋 / 飯店
     if (n.includes('溫泉') || n.includes('湯屋') || s.includes('hotel') || c === 'tourism') {
       return { bg: '#0284c7', accent: '#38bdf8', text: '#ffffff', tag: '♨️ 礁溪名泉湯屋' };
     }
-    // 名產 / 伴手禮
     if (n.includes('名產') || n.includes('奕順軒') || n.includes('蔥油餅') || n.includes('鴨賞') || s.includes('bakery')) {
       return { bg: '#dc2626', accent: '#fbbf24', text: '#ffffff', tag: '宜蘭在地必吃名產' };
     }
-    // 餐廳 / 小吃 / 拉麵
     if (c === 'amenity' || s.includes('restaurant') || s.includes('fast_food') || n.includes('拉麵') || n.includes('牛肉麵')) {
       return { bg: '#b91c1c', accent: '#f97316', text: '#ffffff', tag: '道地美食物產' };
     }
-    // 藥妝
     if (s.includes('chemist') || n.includes('康是美') || n.includes('屈臣氏')) {
       return { bg: '#0d9488', accent: '#ea580c', text: '#ffffff', tag: '美妝保健生活館' };
     }
@@ -627,17 +702,13 @@ export class SignboardGenerator {
     return palettes[Math.abs(hash) % palettes.length];
   }
 
-  /**
-   * 步驟 4：除錯視覺化 (F3 模式小球與店名懸浮標籤)
-   */
   private addDebugMarker(shop: ShopFeature, status: 'wall' | 'procedural_shop' | 'pole' | 'failed', distFailMeters?: number): void {
     const markerGroup = new THREE.Group();
 
-    // 狀態球顏色
-    let color = 0x22c55e; // 綠 (真實牆面)
-    if (status === 'procedural_shop') color = 0x06b6d4; // 藍青 (補生成店面)
-    else if (status === 'pole') color = 0xeab308; // 黃 (路邊立柱)
-    else if (status === 'failed') color = 0xef4444; // 紅
+    let color = 0x22c55e;
+    if (status === 'procedural_shop') color = 0x06b6d4;
+    else if (status === 'pole') color = 0xeab308;
+    else if (status === 'failed') color = 0xef4444;
 
     const sphereGeo = new THREE.SphereGeometry(0.35, 12, 12);
     const sphereMat = new THREE.MeshBasicMaterial({ color, wireframe: false });
@@ -645,7 +716,6 @@ export class SignboardGenerator {
     sphere.position.set(shop.point.x, 2.0, shop.point.z);
     markerGroup.add(sphere);
 
-    // 懸浮店名標籤 Sprite
     const labelSprite = this.createDebugLabelSprite(shop.name, status, distFailMeters);
     labelSprite.position.set(shop.point.x, 2.9, shop.point.z);
     markerGroup.add(labelSprite);
@@ -653,82 +723,73 @@ export class SignboardGenerator {
     this.debugGroup.add(markerGroup);
   }
 
-  private createDebugLabelSprite(name: string, status: string, distMeters?: number): THREE.Sprite {
+  private createDebugLabelSprite(name: string, status: string, dist?: number): THREE.Sprite {
     const canvas = document.createElement('canvas');
-    canvas.width = 320;
-    canvas.height = 80;
+    canvas.width = 256;
+    canvas.height = 64;
     const ctx = canvas.getContext('2d')!;
 
-    // 背景色
-    if (status === 'wall') {
-      ctx.fillStyle = 'rgba(22, 101, 52, 0.88)';
-    } else if (status === 'procedural_shop') {
-      ctx.fillStyle = 'rgba(14, 116, 144, 0.88)';
+    let bgColor = 'rgba(34, 197, 94, 0.85)';
+    let statusText = '牆面配對';
+    if (status === 'procedural_shop') {
+      bgColor = 'rgba(6, 182, 212, 0.85)';
+      statusText = '補店面';
     } else if (status === 'pole') {
-      ctx.fillStyle = 'rgba(133, 77, 14, 0.88)';
-    } else {
-      ctx.fillStyle = 'rgba(153, 27, 27, 0.88)';
+      bgColor = 'rgba(234, 179, 8, 0.85)';
+      statusText = `立柱 (${dist || 0}m)`;
+    } else if (status === 'failed') {
+      bgColor = 'rgba(239, 68, 68, 0.85)';
+      statusText = '配對失敗';
     }
 
-    ctx.roundRect(4, 4, 312, 72, 10);
+    ctx.fillStyle = bgColor;
+    ctx.roundRect ? ctx.roundRect(4, 4, 248, 56, 10) : ctx.fillRect(4, 4, 248, 56);
     ctx.fill();
+
     ctx.strokeStyle = '#ffffff';
     ctx.lineWidth = 2;
+    ctx.roundRect ? ctx.roundRect(4, 4, 248, 56, 10) : ctx.strokeRect(4, 4, 248, 56);
     ctx.stroke();
 
-    ctx.font = 'bold 22px "Microsoft JhengHei", sans-serif';
     ctx.fillStyle = '#ffffff';
+    ctx.font = 'bold 20px "Microsoft JhengHei", sans-serif';
     ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(name.slice(0, 10), 160, 28);
+    ctx.fillText(name.slice(0, 8), 128, 28);
 
     ctx.font = '14px sans-serif';
-    ctx.fillStyle = '#ffffff';
-    let subText = '✓ 真實建物招牌';
-    if (status === 'procedural_shop') subText = '✓ 補生成店面招牌';
-    else if (status === 'pole') subText = `⚠ 路邊人行道立柱 (${distMeters ? distMeters + 'm' : ''})`;
-    ctx.fillText(subText, 160, 54);
+    ctx.fillStyle = '#f8fafc';
+    ctx.fillText(statusText, 128, 48);
 
-    const texture = new THREE.CanvasTexture(canvas);
-    const spriteMat = new THREE.SpriteMaterial({ map: texture, depthTest: false });
+    const tex = new THREE.CanvasTexture(canvas);
+    const spriteMat = new THREE.SpriteMaterial({ map: tex, depthTest: false, depthWrite: false });
     const sprite = new THREE.Sprite(spriteMat);
-    sprite.scale.set(3.6, 0.9, 1);
+    sprite.scale.set(4.0, 1.0, 1.0);
     return sprite;
   }
 
-  /**
-   * 步驟 6：逐幀計算視野錐 (Frustum Culling) 內招牌渲染數
-   */
-  public updateFrustum(camera: THREE.Camera): number {
-    if (!this.stats || this.items.length === 0) return 0;
-
+  public updateFrustumCulling(camera: THREE.PerspectiveCamera): void {
     this.projScreenMatrix.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
     this.frustum.setFromProjectionMatrix(this.projScreenMatrix);
 
     let count = 0;
     for (const item of this.items) {
       this.tempSphere.center.copy(item.mesh.position);
-      this.tempSphere.radius = 4.0;
-      if (this.frustum.intersectsSphere(this.tempSphere)) {
+      this.tempSphere.radius = 2.5;
+
+      const visible = this.frustum.intersectsSphere(this.tempSphere);
+      if (visible) {
         count++;
       }
     }
 
-    this.stats.visibleInFrustum = count;
-    return count;
+    if (this.stats) {
+      this.stats.visibleInFrustum = count;
+    }
   }
 
-  public getItems(): SignboardItem[] {
-    return this.items;
-  }
-
-  public toggleDebug(forceState?: boolean): boolean {
-    this.isDebugVisible = forceState !== undefined ? forceState : !this.isDebugVisible;
+  public toggleDebug(): boolean {
+    this.isDebugVisible = !this.isDebugVisible;
     this.debugGroup.visible = this.isDebugVisible;
-    return this.isDebugVisible;
-  }
-
-  public getIsDebugVisible(): boolean {
     return this.isDebugVisible;
   }
 
@@ -736,51 +797,50 @@ export class SignboardGenerator {
     return this.stats;
   }
 
-  // --- 幾何輔助計算 ---
+  public getSignboardItems(): SignboardItem[] {
+    return this.items;
+  }
 
-  private findBestStreetWall(
-    shopPt: Point2D,
-    building: BuildingFeature,
-    roads: RoadFeature[]
-  ): WallCandidate | null {
-    const poly = building.footprint;
-    if (poly.length < 3) return null;
+  private findBestStreetWall(shopPt: Point2D, bldg: BuildingFeature, roads: RoadFeature[]): WallCandidate | null {
+    const poly = bldg.footprint;
+    const n = poly.length;
+    if (n < 3) return null;
+
+    let centerX = 0, centerZ = 0;
+    for (const p of poly) {
+      centerX += p.x;
+      centerZ += p.z;
+    }
+    centerX /= n;
+    centerZ /= n;
 
     const walls: WallCandidate[] = [];
-    let cx = 0, cz = 0;
-    for (const p of poly) {
-      cx += p.x;
-      cz += p.z;
-    }
-    cx /= poly.length;
-    cz /= poly.length;
 
-    for (let i = 0; i < poly.length; i++) {
+    for (let i = 0; i < n; i++) {
       const p1 = poly[i];
-      const p2 = poly[(i + 1) % poly.length];
+      const p2 = poly[(i + 1) % n];
+
       const dx = p2.x - p1.x;
       const dz = p2.z - p1.z;
       const len = Math.hypot(dx, dz);
-      if (len < 1.2) continue;
+      if (len < 1.0) continue;
+
+      let nx = dz / len;
+      let nz = -dx / len;
 
       const midX = (p1.x + p2.x) * 0.5;
       const midZ = (p1.z + p2.z) * 0.5;
 
-      let nx = -dz / len;
-      let nz = dx / len;
-
-      const toMidX = midX - cx;
-      const toMidZ = midZ - cz;
-      if (nx * toMidX + nz * toMidZ < 0) {
+      if (nx * (midX - centerX) + nz * (midZ - centerZ) < 0) {
         nx = -nx;
         nz = -nz;
       }
 
-      let minRoadDist = Infinity;
+      let minDistToRoad = Infinity;
       for (const r of roads) {
-        for (const pt of r.points) {
-          const d = Math.hypot(midX - pt.x, midZ - pt.z);
-          if (d < minRoadDist) minRoadDist = d;
+        for (let j = 0; j < r.points.length - 1; j++) {
+          const d = this.distToSegment({ x: midX, z: midZ }, r.points[j], r.points[j + 1]);
+          if (d < minDistToRoad) minDistToRoad = d;
         }
       }
 
@@ -790,7 +850,7 @@ export class SignboardGenerator {
         center: { x: midX, z: midZ },
         normal: { x: nx, z: nz },
         length: len,
-        distToRoad: minRoadDist
+        distToRoad: minDistToRoad
       });
     }
 
@@ -903,11 +963,27 @@ export class SignboardGenerator {
       scene.remove(this.proceduralBuildingsGroup);
       this.proceduralBuildingsGroup.clear();
     }
+    if (this.mergedProceduralMesh) {
+      this.mergedProceduralMesh.geometry.dispose();
+      (this.mergedProceduralMesh.material as THREE.Material).dispose();
+      this.mergedProceduralMesh = null;
+    }
+    if (this.bracketsMesh) {
+      this.bracketsMesh.geometry.dispose();
+      (this.bracketsMesh.material as THREE.Material).dispose();
+      this.bracketsMesh = null;
+    }
+    if (this.polesMesh) {
+      this.polesMesh.geometry.dispose();
+      (this.polesMesh.material as THREE.Material).dispose();
+      this.polesMesh = null;
+    }
     if (this.debugGroup) {
       scene.remove(this.debugGroup);
       this.debugGroup.clear();
     }
     this.items = [];
+    this.signMaterials = [];
     this.stats = null;
   }
 }

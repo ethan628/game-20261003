@@ -1,10 +1,10 @@
 /**
- * WorldManager.ts - 3D 世界生成與生命週期管理器
- * 協調環境、道路、建物、自然地貌與街景裝飾物生成，並維護空間檢索資料
+ * WorldManager.ts - 3D 世界生成與生命週期管理器 (GTA 風格升級)
+ * 協調環境、道路、建物、自然地貌、街道雜物與招牌系統，支援濕潤/夜間模式與空間檢索
  */
 
 import * as THREE from 'three';
-import { BuildingPipelineStats, OsmWorldData, SignboardPipelineStats } from '../geo/OsmTypes.ts';
+import { BuildingFeature, BuildingPipelineStats, OsmWorldData, SignboardPipelineStats } from '../geo/OsmTypes.ts';
 import { EnvironmentGenerator } from './EnvironmentGenerator.ts';
 import { RoadGenerator } from './RoadGenerator.ts';
 import { BuildingCollisionData, BuildingGenerator } from './BuildingGenerator.ts';
@@ -14,6 +14,7 @@ import { SignboardGenerator } from './SignboardGenerator.ts';
 
 export class WorldManager {
   private scene: THREE.Scene;
+  private renderer?: THREE.WebGLRenderer;
   private environmentGen: EnvironmentGenerator;
   private roadGen: RoadGenerator;
   private buildingGen: BuildingGenerator;
@@ -24,8 +25,9 @@ export class WorldManager {
   private currentData: OsmWorldData | null = null;
   private buildingColliders: BuildingCollisionData[] = [];
 
-  constructor(scene: THREE.Scene) {
+  constructor(scene: THREE.Scene, renderer?: THREE.WebGLRenderer) {
     this.scene = scene;
+    this.renderer = renderer;
     this.environmentGen = new EnvironmentGenerator();
     this.roadGen = new RoadGenerator();
     this.buildingGen = new BuildingGenerator();
@@ -33,23 +35,23 @@ export class WorldManager {
     this.propGen = new PropGenerator();
     this.signboardGen = new SignboardGenerator();
 
-    // 初始化基礎環境光影與地面
-    this.environmentGen.setupSceneEnvironment(this.scene);
+    // 初始化基礎環境光影、天空、PMREM 與地面
+    this.environmentGen.setupSceneEnvironment(this.scene, this.renderer);
   }
 
   /**
-   * 根據標準化 OsmWorldData 生成全城 3D 幾何物件 (含店家招牌)
+   * 根據標準化 OsmWorldData 生成全城 3D 幾何物件 (含店家招牌與街道雜物)
    */
   public async buildWorld(data: OsmWorldData): Promise<void> {
     this.currentData = data;
 
-    // 1. 生成自然地貌多邊形（水域、綠地）
+    // 1. 自然地貌多邊形（水域、綠地）
     this.terrainGen.generate(data.features, this.scene);
 
-    // 2. 生成道路、立體人行道、路緣石與路面標線
+    // 2. 道路、立體人行道、路緣石與路面標線
     this.roadGen.generate(data.roads, this.scene);
 
-    // 3. 生成建築物 (含女兒牆、窗戶、屋頂水塔) 並取得碰撞資料
+    // 3. 建築物 (含 PBR 牆面、反射窗戶、屋頂水塔/冷氣機/天線) 並取得碰撞資料
     this.buildingColliders = this.buildingGen.generate(
       data.buildings,
       this.scene,
@@ -57,10 +59,10 @@ export class WorldManager {
       data.buildingDebugFootprints
     );
 
-    // 4. 生成人行道行道樹與路燈 (InstancedMesh)
+    // 4. 街道雜物與環境物 (行道樹、街燈、機車、汽車、交通錐、消防栓、垃圾桶、電桿等 InstancedMesh)
     this.propGen.generate(data.roads, this.scene);
 
-    // 5. 生成 3D 店家招牌系統 (臨街牆面招牌、路邊立柱、補生成店面街屋)
+    // 5. 3D 店家招牌系統 (臨街牆面招牌、路邊立柱、補生成店面街屋全數合併)
     const { stats: sbStats, extraBuildingColliders } = await this.signboardGen.generate(
       data.shops || [],
       data.buildings,
@@ -73,16 +75,50 @@ export class WorldManager {
       this.buildingColliders.push(...extraBuildingColliders);
     }
 
+    // 若當前處於濕潤或夜間模式，同步套用至新生成的幾何體
+    if (this.environmentGen.getIsWet()) {
+      this.roadGen.setWetMode(true);
+    }
+    if (this.environmentGen.getIsNight()) {
+      this.signboardGen.setNightMode(true);
+    }
+
     console.log(
-      `[WorldManager] 3D 世界建構完成！道路: ${data.roads.length} 條, 建物: ${data.buildings.length + sbStats.onProceduralShop} 棟 (真實: ${data.buildings.length}, 補生成店面: ${sbStats.onProceduralShop}), 地貌: ${data.features.length} 塊, 店家招牌: ${(data.shops || []).length} 家`
+      `[WorldManager] 3D 世界建構完成！道路: ${data.roads.length} 條, 建物: ${data.buildings.length + sbStats.onProceduralShop} 棟, 店家招牌: ${(data.shops || []).length} 家`
     );
   }
 
   /**
-   * 逐幀更新環境（如太陽陰影與天空穹頂跟隨玩家）
+   * 逐幀更新環境（太陽陰影追隨、大氣微粒動態流動）
    */
-  public updateEnvironment(playerPos: THREE.Vector3): void {
-    this.environmentGen.update(playerPos);
+  public updateEnvironment(playerPos: THREE.Vector3, delta = 0.016): void {
+    this.environmentGen.updateEnvironment(playerPos, delta);
+  }
+
+  /**
+   * 切換濕潤模式 (按 R 鍵：路面 roughness 驟降、水光反光)
+   */
+  public toggleWetMode(): boolean {
+    const isWet = this.environmentGen.toggleWetMode();
+    this.roadGen.setWetMode(isWet);
+    return isWet;
+  }
+
+  public getIsWet(): boolean {
+    return this.environmentGen.getIsWet();
+  }
+
+  /**
+   * 切換夜間模式 (按 T 鍵：黃昏魔幻時刻 -> 深夜霓虹繁華)
+   */
+  public toggleNightMode(): boolean {
+    const isNight = this.environmentGen.toggleNightMode(this.scene);
+    this.signboardGen.setNightMode(isNight);
+    return isNight;
+  }
+
+  public getIsNight(): boolean {
+    return this.environmentGen.getIsNight();
   }
 
   public getBuildingColliders(): BuildingCollisionData[] {
@@ -90,7 +126,7 @@ export class WorldManager {
   }
 
   public getBuildingsMesh(): THREE.Mesh | null {
-    return this.buildingGen.getMesh();
+    return this.buildingGen.getBuildingsMesh();
   }
 
   public getCurrentData(): OsmWorldData | null {
@@ -100,8 +136,8 @@ export class WorldManager {
   /**
    * 逐幀計算招牌在相機視野錐內的數量
    */
-  public updateSignboardsFrustum(camera: THREE.Camera): number {
-    return this.signboardGen.updateFrustum(camera);
+  public updateSignboardsFrustum(camera: THREE.PerspectiveCamera): void {
+    this.signboardGen.updateFrustumCulling(camera);
   }
 
   /**
@@ -116,7 +152,7 @@ export class WorldManager {
   }
 
   public getSignboardItems() {
-    return this.signboardGen.getItems();
+    return this.signboardGen.getSignboardItems();
   }
 
   /**
@@ -124,6 +160,29 @@ export class WorldManager {
    */
   public toggleBuildingDebug(): boolean {
     return this.buildingGen.toggleDebug();
+  }
+
+  public toggleFloorLabels(): boolean {
+    return this.buildingGen.toggleFloorLabels();
+  }
+
+  public getBuildingsList(): BuildingFeature[] {
+    return this.buildingGen.getBuildingsList();
+  }
+
+  public getBuildingFeatureById(id: string): BuildingFeature | undefined {
+    return this.buildingGen.getBuildingFeatureById(id);
+  }
+
+  public rebuildBuildings(updatedBuildings: BuildingFeature[]): void {
+    if (!this.currentData) return;
+    this.currentData.buildings = updatedBuildings;
+    this.buildingColliders = this.buildingGen.generate(
+      updatedBuildings,
+      this.scene,
+      this.currentData.buildingStats,
+      this.currentData.buildingDebugFootprints
+    );
   }
 
   public getBuildingStats(): BuildingPipelineStats | null {

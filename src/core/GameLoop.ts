@@ -7,7 +7,7 @@ import { CONFIG } from '../config.ts';
 
 export class GameLoop {
   private updateFn: (fixedDelta: number) => void;
-  private renderFn: (alpha: number) => void;
+  private renderFn: (alpha: number, delta?: number) => void;
   private onFpsUpdate?: (fps: number) => void;
 
   private isRunning = false;
@@ -72,7 +72,7 @@ export class GameLoop {
 
     // 計算插值係數並渲染畫面
     const alpha = this.accumulator / fixedDelta;
-    this.renderFn(alpha);
+    this.renderFn(alpha, deltaSeconds);
 
     // 計算 FPS
     this.frameCount++;

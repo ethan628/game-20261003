@@ -14,9 +14,16 @@ export class InputManager {
   public onToggleStreetView?: () => void;
   public onToggleSplitMode?: () => void;
   public onToggleMinimap?: () => void;
+  public onToggleFullscreenMap?: () => void;
   public onToggleSignboardDebug?: () => void;
   public onClearCacheAndReload?: () => void;
   public onToggleBuildingDebug?: () => void;
+  public onToggleBuildingInspector?: () => void;
+  public onToggleFloorLabels?: () => void;
+  public onTogglePedestrianDebug?: () => void;
+  public onToggleTrafficSignalDebug?: () => void;
+  public onToggleWetMode?: () => void;
+  public onToggleNightMode?: () => void;
   private isSuspended = false;
 
   constructor(domElement: HTMLElement) {
@@ -25,6 +32,10 @@ export class InputManager {
   }
 
   private attachEvents(): void {
+    // 讓 Canvas 容器具備焦點屬性，接收滑鼠點擊焦點
+    this.domElement.tabIndex = -1;
+    this.domElement.style.outline = 'none';
+
     window.addEventListener('keydown', this.onKeyDown);
     window.addEventListener('keyup', this.onKeyUp);
     window.addEventListener('mousemove', this.onMouseMove);
@@ -34,6 +45,11 @@ export class InputManager {
     // 點擊畫面自動請求鎖定滑鼠並恢復遊戲鍵盤控制（若非點擊在對話框或街景 UI 上）
     this.domElement.addEventListener('click', () => {
       this.resumeKeyboard();
+      // 點擊畫布時主動釋放任何殘留按鈕焦點
+      if (document.activeElement && document.activeElement !== document.body && document.activeElement !== this.domElement) {
+        (document.activeElement as HTMLElement).blur();
+      }
+      this.domElement.focus();
       if (!this.isLocked) {
         this.requestPointerLock();
       }
@@ -45,6 +61,20 @@ export class InputManager {
     const targetTag = (e.target as HTMLElement)?.tagName;
     if (targetTag === 'INPUT' || targetTag === 'TEXTAREA') {
       return;
+    }
+
+    // 關鍵保護：防止空白鍵 (跳躍) 或方向鍵觸發瀏覽器對已聚焦按鈕的預設 click 行為或捲動頁面
+    if (
+      e.code === 'Space' ||
+      e.code === 'ArrowUp' ||
+      e.code === 'ArrowDown' ||
+      e.code === 'ArrowLeft' ||
+      e.code === 'ArrowRight'
+    ) {
+      e.preventDefault();
+      if (document.activeElement && document.activeElement !== document.body && document.activeElement !== this.domElement) {
+        (document.activeElement as HTMLElement).blur();
+      }
     }
 
     if (e.code === 'F3' || e.key === 'F3') {
@@ -62,6 +92,32 @@ export class InputManager {
       this.onToggleBuildingDebug?.();
       return;
     }
+    if (e.code === 'F6' || e.key === 'F6') {
+      e.preventDefault();
+      this.onToggleBuildingInspector?.();
+      return;
+    }
+    if (e.code === 'F7' || e.key === 'F7') {
+      e.preventDefault();
+      this.onToggleFloorLabels?.();
+      return;
+    }
+    if (e.code === 'F8' || e.key === 'F8') {
+      e.preventDefault();
+      this.onTogglePedestrianDebug?.();
+      return;
+    }
+    if (e.code === 'F9' || e.key === 'F9') {
+      e.preventDefault();
+      this.onToggleTrafficSignalDebug?.();
+      return;
+    }
+
+    if (e.code === 'Tab') {
+      e.preventDefault();
+      this.onToggleFullscreenMap?.();
+      return;
+    }
 
     if (e.code === 'KeyM') {
       this.onToggleMenu?.();
@@ -77,6 +133,14 @@ export class InputManager {
     }
     if (e.code === 'KeyN') {
       this.onToggleMinimap?.();
+      return;
+    }
+    if (e.code === 'KeyR') {
+      this.onToggleWetMode?.();
+      return;
+    }
+    if (e.code === 'KeyT') {
+      this.onToggleNightMode?.();
       return;
     }
 

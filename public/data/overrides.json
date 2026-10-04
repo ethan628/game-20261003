@@ -1,0 +1,89 @@
+{
+  "description": "建築高度與樓層人工校正資料檔 (優先權最高，覆蓋 OSM 與推測數值)",
+  "version": "1.0",
+  "updatedAt": "2026-10-03T12:00:00Z",
+  "byOsmId": {
+    "way/645838845": {
+      "levels": 2,
+      "height": 8.8,
+      "roofShape": "flat",
+      "note": "礁溪火車站主站體"
+    },
+    "way/219186117": {
+      "levels": 2,
+      "height": 9.2,
+      "roofShape": "gabled",
+      "note": "德陽宮主殿"
+    },
+    "way/305958351": {
+      "levels": 12,
+      "height": 44.0,
+      "roofShape": "flat",
+      "note": "長榮鳳凰酒店 (礁溪)"
+    },
+    "way/516958656": {
+      "levels": 11,
+      "height": 38.0,
+      "roofShape": "flat",
+      "note": "晶泉丰旅"
+    },
+    "way/516958655": {
+      "levels": 9,
+      "height": 31.0,
+      "roofShape": "flat",
+      "note": "捷絲旅宜蘭礁溪館"
+    },
+    "way/536675615": {
+      "levels": 14,
+      "height": 48.0,
+      "roofShape": "flat",
+      "note": "礁溪麒麟酒店"
+    },
+    "way/403801901": {
+      "levels": 4,
+      "height": 14.5,
+      "roofShape": "flat",
+      "note": "宜蘭縣警察局礁溪分局"
+    },
+    "way/403801902": {
+      "levels": 3,
+      "height": 11.0,
+      "roofShape": "flat",
+      "note": "宜蘭縣消防局礁溪分隊"
+    },
+    "way/516958638": {
+      "levels": 1,
+      "height": 5.5,
+      "roofShape": "hipped",
+      "note": "礁溪溫泉公園"
+    },
+    "way/536675627": {
+      "levels": 5,
+      "height": 18.0,
+      "roofShape": "flat",
+      "note": "冒煙的石頭溫泉度假旅館"
+    },
+    "way/344275682": {
+      "levels": 2,
+      "height": 7.8,
+      "roofShape": "skillion",
+      "note": "礁溪轉運站"
+    },
+    "way/200951929": {
+      "levels": 4,
+      "height": 13.5,
+      "roofShape": "flat",
+      "note": "春和溫泉飯店"
+    }
+  },
+  "byCoord": [
+    {
+      "lat": 24.82860,
+      "lon": 121.77355,
+      "levels": 3,
+      "height": 10.5,
+      "roofShape": "flat",
+      "note": "礁溪路五段路口商鋪"
+    }
+  ]
+}

@@ -9,14 +9,22 @@ import { GeoCache } from './GeoCache.ts';
 import {
   BuildingFeature,
   BuildingFootprintDebug,
+  BuildingHeightSource,
   BuildingPipelineStats,
+  BuildingRoofShape,
+  BuildingSourceStats,
   OsmWorldData,
   Point2D,
   PolygonFeature,
   RoadFeature,
   ShopFeature,
-  SignboardPipelineStats
+  SignboardPipelineStats,
+  TrafficSignalFeature
 } from './OsmTypes.ts';
+import { BuildingGeometryUtils } from './BuildingGeometryUtils.ts';
+import { BuildingInferenceService } from './BuildingInferenceService.ts';
+import { BuildingOverrideService } from './BuildingOverrideService.ts';
+import { TrafficIntersectionBuilder } from './TrafficIntersectionBuilder.ts';
 
 export class OsmFetcher {
   private cache: GeoCache;
@@ -37,6 +45,9 @@ export class OsmFetcher {
   ): Promise<OsmWorldData> {
     const radius = CONFIG.GEO.FETCH_RADIUS_METERS;
     const projection = new GeoProjection(originLat, originLon);
+
+    // 優先載入最新人工校正檔 (overrides.json)
+    await BuildingOverrideService.getInstance().loadOverrides();
 
     // 0. 若提供本地預存的真實 OSM 資料檔案，極速秒級載入
     if (presetFile) {
@@ -62,6 +73,9 @@ export class OsmFetcher {
     onProgress?.('檢查本地快取中...');
     const cached = await this.cache.get(originLat, originLon, radius);
     if (cached) {
+      if (!cached.intersections || cached.intersections.length === 0) {
+        cached.intersections = TrafficIntersectionBuilder.buildIntersections(cached.roads, cached.trafficSignals || []);
+      }
       onProgress?.('已載入本地快取資料！');
       return cached;
     }
@@ -74,6 +88,9 @@ export class OsmFetcher {
       [out:json][timeout:${Math.round(CONFIG.GEO.REQUEST_TIMEOUT_MS / 1000)}];
       (
         way["highway"](${bbox.south},${bbox.west},${bbox.north},${bbox.east});
+        node["highway"="traffic_signals"](${bbox.south},${bbox.west},${bbox.north},${bbox.east});
+        node["crossing"="traffic_signals"](${bbox.south},${bbox.west},${bbox.north},${bbox.east});
+        way["highway"="traffic_signals"](${bbox.south},${bbox.west},${bbox.north},${bbox.east});
         way["building"](${bbox.south},${bbox.west},${bbox.north},${bbox.east});
         relation["building"](${bbox.south},${bbox.west},${bbox.north},${bbox.east});
         way["building:part"](${bbox.south},${bbox.west},${bbox.north},${bbox.east});
@@ -83,6 +100,7 @@ export class OsmFetcher {
         way["water"](${bbox.south},${bbox.west},${bbox.north},${bbox.east});
         way["leisure"="park"](${bbox.south},${bbox.west},${bbox.north},${bbox.east});
         way["landuse"~"grass|forest|meadow|recreation_ground|village_green"](${bbox.south},${bbox.west},${bbox.north},${bbox.east});
+        way["railway"](${bbox.south},${bbox.west},${bbox.north},${bbox.east});
       );
       out geom;
     `;
@@ -241,17 +259,21 @@ export class OsmFetcher {
       const pts = resolvePoints(way);
       if (pts.length < 2) continue;
 
-      // --- A. 道路 (Highway) ---
-      if (tags.highway) {
-        const hwType = tags.highway;
+      // --- A. 道路 (Highway) 與 鐵路 (Railway) ---
+      if (tags.highway || tags.railway) {
+        const isRailway = !tags.highway && !!tags.railway;
+        const hwType = tags.highway || 'railway';
         const widthConfig = CONFIG.ROADS.WIDTHS[hwType] || CONFIG.ROADS.WIDTHS.default;
+        const oneway = tags.oneway === 'yes' || tags.oneway === '1' || tags.oneway === 'true' || tags.junction === 'roundabout';
         roads.push({
-          id: `road_${way.id}`,
+          id: `${isRailway ? 'rail' : 'road'}_${way.id}`,
           type: hwType,
           name: tags.name,
           points: pts,
-          width: widthConfig.road,
-          sidewalkWidth: widthConfig.sidewalk
+          width: widthConfig ? widthConfig.road : 4.0,
+          sidewalkWidth: widthConfig ? widthConfig.sidewalk : 0,
+          oneway,
+          isRailway
         });
       }
 
@@ -320,6 +342,7 @@ export class OsmFetcher {
     };
     let polygonFormed = 0;
     const debugFootprints: BuildingFootprintDebug[] = [];
+    const overrideService = BuildingOverrideService.getInstance();
 
     for (const elem of raw.elements) {
       const tags = elem.tags || {};
@@ -330,19 +353,27 @@ export class OsmFetcher {
       else if (elem.type === 'relation') rawBuildingStats.relation++;
       rawBuildingStats.total++;
 
-      // 提取候選多邊形頂點序列
+      // 提取候選多邊形頂點序列與內環 (天井/中庭)
       const candidateRings: Point2D[][] = [];
+      const innerHoles: Point2D[][] = [];
 
       if (elem.type === 'way') {
         const pts = resolvePoints(elem);
         candidateRings.push(pts);
       } else if (elem.type === 'relation') {
-        // Multipolygon 處理：提取 outer members 的幾何
         const members = elem.members || [];
         const outerMembers = members.filter((m: any) => m.role === 'outer');
+        const innerMembers = members.filter((m: any) => m.role === 'inner');
+
         for (const m of outerMembers) {
           if (Array.isArray(m.geometry) && m.geometry.length >= 3) {
             candidateRings.push(m.geometry.map((g: any) => projection.project(g.lat, g.lon)));
+          }
+        }
+
+        for (const m of innerMembers) {
+          if (Array.isArray(m.geometry) && m.geometry.length >= 3) {
+            innerHoles.push(m.geometry.map((g: any) => projection.project(g.lat, g.lon)));
           }
         }
       }
@@ -353,6 +384,17 @@ export class OsmFetcher {
         polygonFailed.reasons.push(`${elem.type}_${elem.id}: 無有效頂點串列`);
         debugFootprints.push({ id: `bldg_${elem.id}`, footprint: [], status: 'failed', reason: '無有效頂點' });
         continue;
+      }
+
+      // 清理與簡化內環 (Holes，天井/中庭)
+      const cleanedHoles: Point2D[][] = [];
+      for (const holePts of innerHoles) {
+        if (!holePts || holePts.length < 3) continue;
+        let hCleaned = this.cleanPolygon(holePts);
+        if (hCleaned.length >= 3) {
+          hCleaned = BuildingGeometryUtils.simplifyPolygon(hCleaned, CONFIG.BUILDINGS.SIMPLIFY_TOLERANCE);
+          cleanedHoles.push(hCleaned);
+        }
       }
 
       for (let ringIdx = 0; ringIdx < candidateRings.length; ringIdx++) {
@@ -383,8 +425,8 @@ export class OsmFetcher {
           }
         }
 
-        // 清理重複點
-        const cleaned = this.cleanPolygon(pts);
+        // 清理重複點並依嚴格公差 (<= 0.3m) 進行化簡，完整保留轉角與凹凸
+        let cleaned = this.cleanPolygon(pts);
         if (cleaned.length < 3) {
           polygonFailed.missingNodes++;
           polygonFailed.total++;
@@ -392,6 +434,8 @@ export class OsmFetcher {
           debugFootprints.push({ id: ringId, footprint: cleaned, status: 'failed', reason: '重疊點過濾後不足3點' });
           continue;
         }
+
+        cleaned = BuildingGeometryUtils.simplifyPolygon(cleaned, CONFIG.BUILDINGS.SIMPLIFY_TOLERANCE);
 
         // 計算有向面積 (Shoelace formula) 並統一為逆時針方向 (CCW)
         const signedArea = this.computeSignedArea(cleaned);
@@ -421,38 +465,150 @@ export class OsmFetcher {
           continue;
         }
 
+        const center = BuildingGeometryUtils.computeCentroid(cleaned);
         const hVal = hashId(elem.id);
-        const height = this.resolveBuildingHeight(tags, hVal);
-        if (height <= 0) {
-          discarded.zeroHeight++;
-          discarded.total++;
-          debugFootprints.push({
-            id: ringId,
-            footprint: cleaned,
-            status: 'discarded',
-            reason: '高度為 0'
-          });
-          continue;
+
+        // --- 多層建築資料可信度判斷 (Override > OSM > External > Estimated) ---
+        let heightSource: BuildingHeightSource = 'estimated';
+        let levels = 3;
+        let height = 0;
+        let confidence = 0.50;
+        let roofShape: BuildingRoofShape = (tags['roof:shape'] as BuildingRoofShape) || 'flat';
+        const roofHeight = tags['roof:height'] ? parseFloat(tags['roof:height']) : undefined;
+        const roofLevels = tags['roof:levels'] ? parseFloat(tags['roof:levels']) : undefined;
+        let minHeight = tags.min_height ? parseFloat(tags.min_height) : (tags['building:min_level'] ? BuildingInferenceService.calcHeightFromLevels(parseFloat(tags['building:min_level'])) : 0);
+        const minLevel = tags['building:min_level'] ? parseFloat(tags['building:min_level']) : undefined;
+        let note: string | undefined;
+
+        // 1. 人工校正檔 (overrides.json) —— 優先權最高
+        const override = overrideService.findOverride(ringId, cleaned, projection);
+        if (override) {
+          heightSource = 'override';
+          levels = override.levels ?? (override.height ? BuildingInferenceService.calcLevelsFromHeight(override.height) : 3);
+          height = override.height ?? BuildingInferenceService.calcHeightFromLevels(levels);
+          roofShape = override.roofShape ?? roofShape;
+          minHeight = override.minHeight ?? minHeight;
+          confidence = 1.0;
+          note = override.note;
+        } else {
+          // 2. OSM 標籤 (height 或 building:levels)
+          const hasOsmHeight = tags.height && !isNaN(parseFloat(tags.height)) && parseFloat(tags.height) > 1.5;
+          const hasOsmLevels = tags['building:levels'] && !isNaN(parseFloat(tags['building:levels'])) && parseFloat(tags['building:levels']) > 0;
+
+          if (hasOsmHeight || hasOsmLevels) {
+            heightSource = 'osm';
+            confidence = 0.90;
+            if (hasOsmHeight) {
+              height = Math.min(parseFloat(tags.height), 450);
+              levels = hasOsmLevels ? parseFloat(tags['building:levels']) : BuildingInferenceService.calcLevelsFromHeight(height);
+            } else {
+              levels = parseFloat(tags['building:levels']);
+              height = BuildingInferenceService.calcHeightFromLevels(levels);
+            }
+          } else {
+            // 3. 外部資料層 (BuildingHeightProvider 接口，預留未來擴充)
+            // 4. 預設先給基準值，稍後由 BuildingInferenceService 批次精準空間估算
+            heightSource = 'estimated';
+            levels = 3;
+            height = BuildingInferenceService.calcHeightFromLevels(levels);
+            confidence = 0.50;
+          }
         }
 
         const colorIndex = hVal % CONFIG.BUILDINGS.PALETTE.length;
-        buildings.push({
+        const candidateBuilding: BuildingFeature = {
           id: ringId,
           type: tags.building || tags['building:part'] || 'yes',
           name: tags.name,
           height,
-          levels: tags['building:levels'] ? parseFloat(tags['building:levels']) : undefined,
+          levels,
+          minHeight: minHeight > 0 ? minHeight : undefined,
+          minLevel,
           footprint: cleaned,
-          colorIndex
-        });
+          holes: cleanedHoles.length > 0 ? cleanedHoles : undefined,
+          roofShape,
+          roofHeight,
+          roofLevels,
+          colorIndex,
+          heightSource,
+          confidence,
+          area: absArea,
+          center,
+          note,
+          tags
+        };
 
-        debugFootprints.push({
-          id: ringId,
-          footprint: cleaned,
-          status: 'generated'
-        });
+        // --- 連棟透天厝 (Row Houses) 臨街分戶檢測 ---
+        let addedBuildings: BuildingFeature[] = [candidateBuilding];
+        if (CONFIG.BUILDINGS.SUBDIVIDE_ROW_HOUSES && heightSource === 'estimated' && !tags.name) {
+          const subdivided = BuildingGeometryUtils.subdivideRowHouse(
+            candidateBuilding,
+            CONFIG.BUILDINGS.UNIT_WIDTH_MIN,
+            CONFIG.BUILDINGS.UNIT_WIDTH_MAX
+          );
+          if (subdivided && subdivided.length > 1) {
+            addedBuildings = subdivided;
+          }
+        }
+
+        for (const b of addedBuildings) {
+          buildings.push(b);
+          debugFootprints.push({
+            id: b.id,
+            footprint: b.footprint,
+            holes: b.holes,
+            status: 'generated',
+            source: b.heightSource,
+            levels: b.levels,
+            height: b.height
+          });
+        }
       }
     }
+
+    // --- 批次空間中位數與推測補值管線 (要素 A, B, C, D) ---
+    BuildingInferenceService.inferMissingBuildings(buildings, roads);
+
+    // 重新回填 debugFootprints 的推測數據
+    for (const df of debugFootprints) {
+      if (df.status === 'generated') {
+        const matched = buildings.find((b) => b.id === df.id);
+        if (matched) {
+          df.source = matched.heightSource;
+          df.levels = matched.levels;
+          df.height = matched.height;
+        }
+      }
+    }
+
+    // 計算建築可信度統計 (OSM, 外部, 人工校正, 推測比例)
+    const sourceCounts = { osm: 0, external: 0, override: 0, estimated: 0 };
+    let totalLevelsEstimated = 0;
+    let estimatedCount = 0;
+    for (const b of buildings) {
+      sourceCounts[b.heightSource]++;
+      if (b.heightSource === 'estimated') {
+        totalLevelsEstimated += b.levels;
+        estimatedCount++;
+      }
+    }
+    const totalBldgs = buildings.length || 1;
+    const sourceStats: BuildingSourceStats = {
+      override: sourceCounts.override,
+      osm: sourceCounts.osm,
+      external: sourceCounts.external,
+      estimated: sourceCounts.estimated,
+      total: totalBldgs,
+      osmCount: sourceCounts.osm,
+      osmPercent: +(sourceCounts.osm / totalBldgs * 100).toFixed(1),
+      externalCount: sourceCounts.external,
+      externalPercent: +(sourceCounts.external / totalBldgs * 100).toFixed(1),
+      overrideCount: sourceCounts.override,
+      overridePercent: +(sourceCounts.override / totalBldgs * 100).toFixed(1),
+      estimatedCount: sourceCounts.estimated,
+      estimatedPercent: +(sourceCounts.estimated / totalBldgs * 100).toFixed(1),
+      estimatedAvgLevels: estimatedCount > 0 ? +(totalLevelsEstimated / estimatedCount).toFixed(1) : 0
+    };
 
     console.log(
       `%c[建築管線第 1 關] Overpass building 原始數: way=${rawBuildingStats.way}, relation=${rawBuildingStats.relation}, 總計=${rawBuildingStats.total}`,
@@ -466,6 +622,10 @@ export class OsmFetcher {
       `%c[建築管線第 3 關] 規則過濾丟棄: ${discarded.total} 筆 (面積<${CONFIG.BUILDINGS.MIN_AREA}m²: ${discarded.tooSmall}, 高度<=0: ${discarded.zeroHeight}, 淨空區: ${discarded.clearanceRule}) | 通過留存: ${buildings.length} 棟`,
       'color: #38bdf8; font-weight: bold;'
     );
+    console.log(
+      `%c[建築資料可信度] 總建物: ${buildings.length} 棟 | 🟣校正: ${sourceStats.overrideCount} (${sourceStats.overridePercent}%) | 🟢OSM實測: ${sourceStats.osmCount} (${sourceStats.osmPercent}%) | 🔵外部: ${sourceStats.externalCount} (${sourceStats.externalPercent}%) | 🟠空間推測: ${sourceStats.estimatedCount} (${sourceStats.estimatedPercent}%) [推測均高 ${sourceStats.estimatedAvgLevels}層]`,
+      'color: #a855f7; font-weight: bold; font-size: 13px;'
+    );
 
     const buildingStats: BuildingPipelineStats = {
       rawOverpass: rawBuildingStats,
@@ -475,7 +635,8 @@ export class OsmFetcher {
       triangulationFailed: { count: 0, errors: [] },
       inSceneMeshes: 0,
       totalVertices: 0,
-      nearby100m: 0
+      nearby100m: 0,
+      sourceStats
     };
 
     // --- C. 店家與 POI 資料解析 (招牌系統第 1 關與第 2 關) ---
@@ -585,6 +746,39 @@ export class OsmFetcher {
       fictionalCount: fictionalShopsCount
     };
 
+    // --- D. 交通號誌與路口拓撲分析 ---
+    const trafficSignals: TrafficSignalFeature[] = [];
+    for (const elem of raw.elements) {
+      const tags = elem.tags || {};
+      const isSignal = tags.highway === 'traffic_signals' || tags.crossing === 'traffic_signals';
+      if (!isSignal) continue;
+
+      let lat = elem.lat;
+      let lon = elem.lon;
+      if (lat === undefined && elem.center) {
+        lat = elem.center.lat;
+        lon = elem.center.lon;
+      }
+      if (lat !== undefined && lon !== undefined) {
+        const pt = projection.project(lat, lon);
+        let dir: number | undefined;
+        if (tags.direction !== undefined) {
+          const dVal = parseFloat(tags.direction);
+          if (!isNaN(dVal)) dir = dVal * (Math.PI / 180);
+        }
+        trafficSignals.push({
+          id: `sig_${elem.type}_${elem.id}`,
+          point: pt,
+          direction: dir,
+          hasSound: tags['traffic_signals:sound'] === 'yes',
+          crossingType: tags.crossing,
+          rawTags: tags
+        });
+      }
+    }
+
+    const intersections = TrafficIntersectionBuilder.buildIntersections(roads, trafficSignals);
+
     return {
       origin: {
         lat: originLat,
@@ -596,6 +790,8 @@ export class OsmFetcher {
       buildings,
       features,
       shops,
+      trafficSignals,
+      intersections,
       stats,
       buildingStats,
       buildingDebugFootprints: debugFootprints,
@@ -603,31 +799,7 @@ export class OsmFetcher {
     };
   }
 
-  /**
-   * 計算建物高度：優先 height 標籤，其次 levels 乘算，最後依類型決定性隨機
-   */
-  private resolveBuildingHeight(tags: any, hash: number): number {
-    if (tags.height) {
-      const h = parseFloat(tags.height);
-      if (!isNaN(h) && h > 1.5) return Math.min(h, 450);
-    }
 
-    if (tags['building:levels']) {
-      const lv = parseFloat(tags['building:levels']);
-      if (!isNaN(lv) && lv > 0) {
-        return Math.min(lv * CONFIG.BUILDINGS.LEVEL_HEIGHT, 400);
-      }
-    }
-
-    const bType = tags.building;
-    const range = CONFIG.BUILDINGS.TYPE_HEIGHTS[bType] || [
-      CONFIG.BUILDINGS.DEFAULT_HEIGHT_MIN,
-      CONFIG.BUILDINGS.DEFAULT_HEIGHT_MAX
-    ];
-
-    const ratio = (hash % 1000) / 1000.0;
-    return range[0] + ratio * (range[1] - range[0]);
-  }
 
   /**
    * 清理多邊形頂點（去除首尾重複、過近點）
@@ -791,18 +963,28 @@ export class OsmFetcher {
 
       for (const cell of subCells) {
         const height = 10 + (bldgId * 7) % 32;
+        const footprint = [
+          { x: cell.x1, z: cell.z1 },
+          { x: cell.x2, z: cell.z1 },
+          { x: cell.x2, z: cell.z2 },
+          { x: cell.x1, z: cell.z2 }
+        ];
+        const center = BuildingGeometryUtils.computeCentroid(footprint);
+        const area = (cell.x2 - cell.x1) * (cell.z2 - cell.z1);
+        const levels = BuildingInferenceService.calcLevelsFromHeight(height);
         buildings.push({
           id: `fallback_bldg_${bldgId}`,
           type: 'commercial',
           name: `示範大樓 #${bldgId}`,
           height,
-          footprint: [
-            { x: cell.x1, z: cell.z1 },
-            { x: cell.x2, z: cell.z1 },
-            { x: cell.x2, z: cell.z2 },
-            { x: cell.x1, z: cell.z2 }
-          ],
-          colorIndex: bldgId % CONFIG.BUILDINGS.PALETTE.length
+          levels,
+          footprint,
+          roofShape: 'flat',
+          colorIndex: bldgId % CONFIG.BUILDINGS.PALETTE.length,
+          heightSource: 'estimated',
+          confidence: 0.6,
+          area,
+          center
         });
         bldgId++;
       }
@@ -854,13 +1036,32 @@ export class OsmFetcher {
       triangulationFailed: { count: 0, errors: [] },
       inSceneMeshes: 0,
       totalVertices: 0,
-      nearby100m: 0
+      nearby100m: 0,
+      sourceStats: {
+        override: 0,
+        osm: 0,
+        external: 0,
+        estimated: buildings.length,
+        total: buildings.length,
+        osmCount: 0,
+        osmPercent: 0,
+        externalCount: 0,
+        externalPercent: 0,
+        overrideCount: 0,
+        overridePercent: 0,
+        estimatedCount: buildings.length,
+        estimatedPercent: 100,
+        estimatedAvgLevels: 3.5
+      }
     };
 
     const buildingDebugFootprints: BuildingFootprintDebug[] = buildings.map((b) => ({
       id: b.id,
       footprint: b.footprint,
-      status: 'generated'
+      status: 'generated',
+      source: b.heightSource,
+      levels: b.levels,
+      height: b.height
     }));
 
     return {
