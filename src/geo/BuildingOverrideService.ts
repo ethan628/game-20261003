@@ -27,7 +27,8 @@ export class BuildingOverrideService {
    */
   public async loadOverrides(): Promise<void> {
     try {
-      const resp = await fetch('/data/overrides.json?t=' + Date.now());
+      const base = import.meta.env.BASE_URL || '/';
+      const resp = await fetch(`${base}data/overrides.json?t=` + Date.now());
       if (resp.ok) {
         const json = await resp.json();
         if (json) {

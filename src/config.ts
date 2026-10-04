@@ -12,6 +12,8 @@ export interface PresetLocation {
   presetFile?: string;
 }
 
+const BASE_URL = import.meta.env.BASE_URL || '/';
+
 export const PRESET_LOCATIONS: PresetLocation[] = [
   {
     id: 'jiaoxi',
@@ -19,7 +21,7 @@ export const PRESET_LOCATIONS: PresetLocation[] = [
     desc: '真實核心街區 (24.828, 121.772) 湯圍溝溫泉公園、飯店群與溫泉街',
     lat: 24.828,
     lon: 121.772,
-    presetFile: '/presets/jiaoxi.json'
+    presetFile: `${BASE_URL}presets/jiaoxi.json`
   },
   {
     id: 'jiaoxi_south',
@@ -34,7 +36,7 @@ export const PRESET_LOCATIONS: PresetLocation[] = [
     desc: '宜蘭市中心幾米廣場與舊城街廓 (24.755, 121.754)',
     lat: 24.7554,
     lon: 121.7538,
-    presetFile: '/presets/yilan.json'
+    presetFile: `${BASE_URL}presets/yilan.json`
   },
   {
     id: 'taipei101',
@@ -42,7 +44,7 @@ export const PRESET_LOCATIONS: PresetLocation[] = [
     desc: '台北信義計畫區、摩天高樓群與寬廣大道 (25.034, 121.564)',
     lat: 25.0339,
     lon: 121.5644,
-    presetFile: '/presets/taipei101.json'
+    presetFile: `${BASE_URL}presets/taipei101.json`
   },
   {
     id: 'pier2',
@@ -50,7 +52,7 @@ export const PRESET_LOCATIONS: PresetLocation[] = [
     desc: '高雄港灣、倉庫聚落、水岸與輕軌景觀 (22.620, 120.282)',
     lat: 22.6198,
     lon: 120.2818,
-    presetFile: '/presets/pier2.json'
+    presetFile: `${BASE_URL}presets/pier2.json`
   }
 ];
 
