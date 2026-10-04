@@ -15,7 +15,7 @@ export interface RoadFeature {
   points: Point2D[];
   width: number;
   sidewalkWidth: number;
-  oneway?: boolean;
+  oneway?: boolean | number;
   isRailway?: boolean;
 }
 
@@ -184,6 +184,28 @@ export interface TrafficSignalFeature {
 
 export type SignalPhaseGroup = 'A' | 'B';
 
+/**
+ * 停止線核心資料結構 (單一資料來源)
+ * 供地面標線渲染、斑馬線、機慢車停等區、AI 煞車停車目標共同使用
+ */
+export interface StopLine {
+  laneId: string;
+  intersectionId: string;
+  approachId: string;
+  position: number;             // 沿車道曲線的距離 (米)
+  worldPosition: Point2D;       // 停止線中心世界座標
+  azimuthRad: number;           // 進入方位角 (rad)
+  p1: Point2D;                  // 停止線左端點
+  p2: Point2D;                  // 停止線右端點
+  width: number;                // 停止線寬度 (m)
+  crosswalkEdgeDistance: number;// 距離斑馬線外緣的距離 (m)
+  hasScooterWaitingBox: boolean;// 是否有機慢車停等區
+  scooterStopWorldPosition?: Point2D; // 機車停等目標位置 (若有機慢車停等區)
+  scooterBoxCenter?: Point2D;   // 機慢車停等區中心
+  scooterBoxWidth?: number;     // 停等區寬度
+  scooterBoxLength?: number;    // 停等區長度
+}
+
 export interface IntersectionApproach {
   id: string;                 // e.g. "approach_0_1"
   roadName: string;
@@ -193,6 +215,7 @@ export interface IntersectionApproach {
   entryPoint: Point2D;        // 進入點 / 停止線中心
   stopLineP1: Point2D;        // 停止線左端點
   stopLineP2: Point2D;        // 停止線右端點
+  stopLine?: StopLine;        // 單一資料來源停止線
   waitingBoxCenter?: Point2D; // 機車待轉區中心
   waitingBoxP1?: Point2D;     // 機車待轉區左上角
   waitingBoxP2?: Point2D;     // 機車待轉區右下角
@@ -206,6 +229,9 @@ export interface IntersectionCrossing {
   p2: Point2D;
   center: Point2D;
   width: number;
+  length: number;             // 沿道路方向長度 (m，一般為 3.0m)
+  azimuthRad: number;         // 道路前進方位角
+  outerEdgeCenter: Point2D;   // 迎車方向之斑馬線外緣中心
   signalGroup: SignalPhaseGroup; // 當該群組車輛綠燈時，該穿越道平行通行 (綠燈)
   pedestrianNodeIds?: [number, number]; // 對應行人路網端點 (若有)
 }
@@ -229,6 +255,7 @@ export interface IntersectionFeature {
   hasSignals: boolean;        // 是否有設置交通號誌
   approaches: IntersectionApproach[];
   crossings: IntersectionCrossing[];
+  stopLines?: StopLine[];     // 該路口所有停止線清單
   poles: TrafficSignalPoleConfig[];
   osmSignalIds?: string[];
 }

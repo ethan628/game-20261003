@@ -98,8 +98,8 @@ export const CONFIG = {
   // 地理資訊與 Overpass 查詢
   GEO: {
     FETCH_RADIUS_METERS: 500,  // 抓取半徑約 500 公尺 (直徑 1000m 範圍)
-    CACHE_VERSION: 'v4_building_fix',
-    CACHE_DB_NAME: 'GTA_OSM_Cache_v4',
+    CACHE_VERSION: 'v5_traffic_signals',
+    CACHE_DB_NAME: 'GTA_OSM_Cache_v5',
     CACHE_STORE_NAME: 'regions',
     REQUEST_TIMEOUT_MS: 9000,  // 逾時 9 秒，防長期卡住
     MAX_RETRIES: 3,            // 伺服器失敗重試次數
@@ -157,13 +157,13 @@ export const CONFIG = {
   // 世界視覺風格 (GTA 寫實氛圍：黃昏暖橘太陽、橘粉地平線、青藍天頂、指數霧氣)
   WORLD: {
     GROUND_SIZE: 2200,         // 地面平面邊長 (m)
-    GROUND_COLOR: 0xd8ceb8,    // 偏暖的米色大地基底
+    GROUND_COLOR: 0x1e232a,    // 現代城市深板岩灰基底 (與柏油路及人行道自然銜接，夜間不反白)
     SKY_GRADIENT: {
       TOP: '#153250',          // 天頂深青藍
       MIDDLE: '#784c68',       // 中層紫橘粉
       HORIZON: '#f8a768'       // 地平線暖橘金
     },
-    FOG_COLOR: 0xdfb498,       // 霧氣顏色與地平線橘粉 100% 一致
+    FOG_COLOR: 0x8a9bb5,       // 中性大氣透視霧色 (夜間由 WeatherRenderer 接管為 #141c33)
     FOG_DENSITY: 0.0016,       // 指數霧濃度 (遠景呈現藍灰/暖灰空氣透視)
     FOG_NEAR: 120,             // 備用線性霧近端
     FOG_FAR: 520,              // 備用線性霧遠端
@@ -196,11 +196,12 @@ export const CONFIG = {
       cycleway: { road: 2.5, sidewalk: 0.0 },
       default: { road: 6.0, sidewalk: 1.2 }
     } as Record<string, { road: number; sidewalk: number }>,
-    ROAD_COLOR: 0x323842,      // 柏油路：深灰帶一點藍，絕非純黑
-    SIDEWALK_COLOR: 0xd8d2c6,  // 人行道：偏暖的淺灰
-    CURB_COLOR: 0xb5ad9e,      // 路緣石立體面顏色
+    ROAD_COLOR: 0x2e384b,      // 柏油路：深藍灰，基底色提高至不低於 #2a3144，夜間可辨識
+    SIDEWALK_COLOR: 0x4a5568,  // 人行道：中性都會中暖灰地磚，與柏油有清晰明度反差
+    CURB_COLOR: 0x3d4756,      // 路緣石立體面顏色
     MARKING_WHITE: 0xf4f7fa,   // 車道白色虛線與斑馬線
     MARKING_YELLOW: 0xf5b041,  // 雙黃實線
+    SIDEWALK_HEIGHT: 0.15,     // 人行道高度 (m)
     ELEVATION: {
       ROAD: 0.02,              // 柏油路高程 (m)
       MARKING: 0.028,          // 標線略高於路面
@@ -306,12 +307,12 @@ export const CONFIG = {
 
   // 自然景觀與地貌 (水域、綠地)
   FEATURES: {
-    WATER_COLOR: 0x4aa8db,     // 帶透明感的清澈青藍色
+    WATER_COLOR: 0x22557c,     // 水域：沉穩深青藍，夜間可辨識水面
     WATER_ROUGHNESS: 0.15,
     WATER_OPACITY: 0.88,
     WATER_ELEVATION: 0.018,
-    GREEN_COLOR: 0x66a85e,     // 柔和草綠
-    FOREST_COLOR: 0x4a8c44,    // 深林翠綠
+    GREEN_COLOR: 0x255234,     // 綠地草地：自然暗綠，夜間與柏油人行道明確區隔
+    FOREST_COLOR: 0x1a4025,    // 深林濃綠
     GREEN_ELEVATION: 0.012
   },
 
@@ -518,22 +519,22 @@ export const CONFIG = {
     },
     // 外觀與幾何規格 (台灣懸臂式號誌桿風格)
     VISUAL: {
-      POLE_COLOR: '#2d3735',           // 深墨灰綠號誌桿
-      HOUSING_COLOR: '#181b1c',        // 黑色霧面燈箱外殼
-      VISOR_COLOR: '#121415',          // 遮光罩深黑
-      POLE_HEIGHT: 6.8,                // 燈桿立柱高度 (m)
-      POLE_RADIUS: 0.13,               // 燈桿直徑
-      ARM_LENGTH: 5.5,                 // 伸向車道上方橫臂長度 (m)
-      ARM_HEIGHT: 5.8,                 // 橫臂離地高度 (m)
-      SIGNAL_HEAD_WIDTH: 1.05,         // 車輛橫式三燈箱寬度 (m)
-      SIGNAL_HEAD_HEIGHT: 0.36,        // 車輛燈箱高度 (m)
-      SIGNAL_LENS_RADIUS: 0.12,        // 燈面圓盤半徑 (m)
-      PED_HEAD_HEIGHT: 2.6,            // 行人專用號誌離地高度 (m)
-      PED_HEAD_SIZE: 0.32,             // 行人號誌箱寬度 (m)
-      COUNTDOWN_HEIGHT: 2.6,           // 倒數計時器離地高度 (m)
-      COUNTDOWN_SIZE: 0.30,            // 倒數計時箱尺寸 (m)
-      EMISSIVE_INTENSITY: 2.0,         // 號誌亮燈自發光強度
-      DIM_INTENSITY: 0.08,             // 滅燈時微弱環境反射
+      POLE_COLOR: '#1e293b',           // 深灰藍底號誌桿
+      HOUSING_COLOR: '#111827',        // 黑色霧面燈箱外殼
+      VISOR_COLOR: '#030712',          // 遮光罩深黑
+      POLE_HEIGHT: 7.2,                // 燈桿立柱高度 (m)
+      POLE_RADIUS: 0.16,               // 燈桿直徑加粗 (m)
+      ARM_LENGTH: 5.8,                 // 伸向車道上方橫臂長度 (m)
+      ARM_HEIGHT: 6.0,                 // 橫臂離地高度 (m)
+      SIGNAL_HEAD_WIDTH: 0.95,         // 車輛橫式三燈箱寬度 (m)
+      SIGNAL_HEAD_HEIGHT: 0.38,        // 車輛燈箱高度 (m)
+      SIGNAL_LENS_RADIUS: 0.14,        // 燈面圓盤半徑 (m) (單燈直徑 0.28m)
+      PED_HEAD_HEIGHT: 2.8,            // 行人專用號誌離地高度 (m)
+      PED_HEAD_SIZE: 0.40,             // 行人號誌箱寬度 (m) (約 0.4m)
+      COUNTDOWN_HEIGHT: 2.8,           // 倒數計時器離地高度 (m)
+      COUNTDOWN_SIZE: 0.40,            // 倒數計時箱尺寸 (m) (約 0.4m)
+      EMISSIVE_INTENSITY: 3.5,         // 號誌亮燈自發光強度
+      DIM_INTENSITY: 0.15,             // 滅燈時微弱環境反射
       COLORS: {
         RED: '#ff2222',
         YELLOW: '#ffbb00',
@@ -553,10 +554,353 @@ export const CONFIG = {
       WAITING_BOX_LENGTH: 2.4,         // 機車待轉格長度 (m)
       MARKING_COLOR: '#f4f7fa'
     },
+    // 停止線與斑馬線規範 (單一資料來源)
+    STOP_LINE_RULES: {
+      CROSSWALK_DISTANCE: 1.8,         // 斑馬線外緣前 1.5~2.0m (設為 1.8m)
+      NO_CROSSWALK_DISTANCE: 2.0,      // 無斑馬線時路口邊界前 2.0m
+      SCOOTER_BOX_THRESHOLD: 4.0,      // 斑馬線與汽車停止線大於 4m 設置機慢車停等區
+      SCOOTER_BOX_CAR_DISTANCE: 4.5,   // 有停等區時汽車停止線距斑馬線外緣 4.5m
+      SCOOTER_BOX_SCOOTER_DISTANCE: 1.5// 有停等區時機車停止線距斑馬線外緣 1.5m
+    },
     // 預留通緝系統違規判定
     RED_LIGHT_DETECTION: {
       CHECK_DISTANCE: 4.5,             // 停止線前後判定容許距離 (m)
       MIN_SPEED_MPS: 1.5               // 判定闖紅燈最低速度
+    }
+  },
+
+  // NPC 交通車輛與駕駛系統配置 (RULES.md 規範集中化)
+  TRAFFIC: {
+    ENABLED: true,
+    MAX_VEHICLES: 45,                  // 全域活躍車輛上限
+    SPAWN_MIN_RADIUS: 25.0,            // 生成最小半徑 (m)
+    SPAWN_MAX_RADIUS: 110.0,           // 生成最大半徑 (m)
+    DESPAWN_RADIUS: 140.0,             // 回收半徑 (m)
+    BASE_SPEED_MPS: 9.0,               // 基礎市區速限 (約 32 km/h)
+    MAX_SPEED_MPS: 14.0,               // 主幹道最高速限 (約 50 km/h)
+    SAFE_DISTANCE_BASE: 5.5,           // 基礎跟車安全距離 (m)
+    STOP_DISTANCE_LIGHT: 4.5,          // 紅燈停止線預留距離 (m)
+    TAXI_HAIL_RADIUS: 30.0,            // 計程車搜尋叫車行人半徑 (m)
+    TAXI_RIDE_DURATION_SEC: 25.0,      // 計程車載客行駛時間 (s)
+    HONK_BLOCKED_TIME_THRESHOLD: 3.0,  // 被前車擋住超過 3 秒考慮按喇叭
+    LOGIC_UPDATE_RADIUS: 90.0,         // 僅更新玩家 90m 內的駕駛反應邏輯 (<=0.3ms 預算)
+    LOD_NEAR_DISTANCE: 60.0,           // 0~60m 完整外觀與動作
+    LOD_FAR_DISTANCE: 120.0,           // 60~120m 簡化色塊無動作，>120m 剔除
+    LOD_NEAR_RADIUS: 60.0,
+    LOD_FAR_RADIUS: 120.0,
+    // 物理尺寸與煞車規劃 (RULES.md 規範)
+    DIMENSIONS: {
+      SEDAN_LENGTH: 4.4,               // 轎車車長 (m)
+      SEDAN_HALF_LEN: 2.2,             // 轎車中心至車頭長 (m)
+      SCOOTER_LENGTH: 1.7,             // 機車車長 (m)
+      SCOOTER_HALF_LEN: 0.85           // 機車中心至車頭長 (m)
+    },
+    BRAKING: {
+      COMFORTABLE_DECEL: 3.0,          // 舒適減速度 (m/s²)
+      MAX_DECEL: 6.5,                  // 緊急減速度 (m/s²)
+      BRAKE_BUFFER: 4.0,               // 煞車距離緩衝預留 (m)
+      STOP_MARGIN_MIN: 0.5,            // 車頭距停止線最小間隙 (m)
+      STOP_MARGIN_MAX: 1.0,            // 車頭距停止線最大間隙 (m)
+      QUEUE_GAP_MIN: 1.5,              // 排隊前車車尾間距最小 (m)
+      QUEUE_GAP_MAX: 2.5,              // 排隊前車車尾間距最大 (m)
+      CLEARANCE_SPACE_REQUIRED: 6.5,   // 路口清空所需空間 (車長+2m)
+      YELLOW_RUN_CHANCE_HURRIED: 0.15, // 趕時間型黃燈末尾搶行機率
+      RED_RUN_FORBIDDEN_SEC: 1.0       // 紅燈亮起超過 1 秒絕對不得通過
+    }
+  },
+
+  DRIVERS: {
+    // 個性權重與參數 (集中管理)
+    PERSONALITIES: {
+      cautious: {
+        id: 'cautious' as const,
+        name: '謹慎型',
+        tag: '謹',
+        weight: 0.25,                  // 約 25%
+        speedMult: 0.85,               // 速度 85%
+        followDistMult: 1.4,           // 車距大
+        reactionDelay: 0.45,           // 反應較慢
+        runYellowChance: 0.0,          // 絕對不搶黃燈
+        honkBaseChance: 0.10,          // 很少按喇叭
+        stopForPedNear: true,          // 行人靠近就先停
+        flashHighBeams: false
+      },
+      normal: {
+        id: 'normal' as const,
+        name: '一般型',
+        tag: '普',
+        weight: 0.40,                  // 約 40%
+        speedMult: 1.0,                // 標準速度
+        followDistMult: 1.0,           // 標準車距
+        reactionDelay: 0.25,
+        runYellowChance: 0.15,
+        honkBaseChance: 0.35,
+        stopForPedNear: false,
+        flashHighBeams: false
+      },
+      hurried: {
+        id: 'hurried' as const,
+        name: '趕時間型',
+        tag: '急',
+        weight: 0.15,                  // 約 15%
+        speedMult: 1.10,               // 速度 110%
+        followDistMult: 0.70,          // 車距小緊貼
+        reactionDelay: 0.15,           // 反應快
+        runYellowChance: 0.40,         // 搶黃燈 40%
+        honkBaseChance: 0.75,          // 頻繁按喇叭
+        stopForPedNear: false,
+        flashHighBeams: true           // 被擋時閃遠光燈
+      },
+      slow: {
+        id: 'slow' as const,
+        name: '慢吞吞型',
+        tag: '慢',
+        weight: 0.10,                  // 約 10%
+        speedMult: 0.75,               // 速度 75%
+        followDistMult: 1.25,
+        reactionDelay: 0.55,           // 反應慢
+        runYellowChance: 0.05,
+        honkBaseChance: 0.15,
+        stopForPedNear: true,
+        flashHighBeams: false
+      },
+      taxi: {
+        id: 'taxi' as const,
+        name: '計程車司機',
+        tag: '運',
+        weight: 0.10,                  // 計程車專用
+        speedMult: 1.05,               // 中高速度
+        followDistMult: 0.90,
+        reactionDelay: 0.20,
+        runYellowChance: 0.25,
+        honkBaseChance: 0.50,
+        stopForPedNear: false,
+        flashHighBeams: false
+      }
+    },
+    // 心情門檻 (0~100)
+    MOOD: {
+      CALM_MAX: 33,
+      ANNOYED_MAX: 66,
+      ANNOYED_DECAY_RATE: 4.0,        // 正常行駛每秒恢復心情分
+      WAIT_ANGER_RATE: 7.0            // 被擋住每秒增加煩躁分
+    },
+    // 車輛佔用機率
+    OCCUPANCY: {
+      SEDAN: [
+        { count: 1, weight: 0.60 },    // 1人 60%
+        { count: 2, weight: 0.25 },    // 2人 25%
+        { count: 3, weight: 0.10 },    // 3人 10%
+        { count: 4, weight: 0.05 }     // 4人 5%
+      ],
+      SCOOTER: [
+        { count: 1, weight: 0.55 },    // 1人 55%
+        { count: 2, weight: 0.45 }     // 2人 45% (含約 40%)
+      ],
+      TAXI_INITIAL_PASSENGER_CHANCE: 0.40 // 計程車初始載客機率 40%
+    },
+    // 安全帽、口罩、雨衣
+    ACCESSORIES: {
+      MASK_CHANCE: 0.35,              // 約 35% 戴口罩
+      RAINCOAT_CLEAR_CHANCE: 0.10,    // 晴天穿雨衣機率 10%
+      RAINCOAT_RAIN_CHANCE: 0.75,     // 雨天穿雨衣機率 75%
+      RAINCOAT_COLORS: [
+        '#fef08a', '#f43f5e', '#38bdf8', '#a855f7', '#34d399', '#fb923c' // 黃、粉、藍、紫、綠、橘
+      ],
+      HELMET_COLORS: [
+        '#ffffff', '#1e293b', '#ef4444', '#3b82f6', '#f59e0b', '#ec4899', '#64748b'
+      ]
+    }
+  },
+
+  // 天氣與時間系統配置 (RULES.md 規範集中化)
+  TIME: {
+    DEFAULT_MODE: 'real' as 'real' | 'virtual',
+    DEFAULT_VIRTUAL_HOUR: 17.5,        // 預設黃昏魔幻時刻 (17:30)
+    DEFAULT_RATE: 1.0,                 // 預設時間流速 (1倍速)
+    RATES: {
+      PAUSED: 0,
+      REALTIME: 1,
+      FAST_10X: 10,
+      FAST_60X: 60,
+      DAY_24MIN: 60,                   // 遊戲內一天 = 24分鐘 (60倍速)
+      DAY_60MIN: 24                    // 遊戲內一天 = 60分鐘 (24倍速)
+    },
+    // 太陽高度角門檻值 (度)
+    SOLAR_THRESHOLDS: {
+      NIGHT: -12.0,                    // 夜晚 (< -12°)
+      DAWN_DUSK: -0.833,               // 暮光/黎明 (-12° ~ -0.833°)
+      SUNRISE_SUNSET: 6.0,             // 日出/日落 (-0.833° ~ 6°)
+      DAY: 6.0                         // 白天 (> 6°)
+    }
+  },
+
+  WEATHER: {
+    DEFAULT_MODE: 'real' as 'real' | 'virtual',
+    DEFAULT_VIRTUAL_TYPE: 'clear' as 'clear' | 'cloudy' | 'overcast' | 'fog' | 'light_rain' | 'heavy_rain' | 'thunderstorm' | 'typhoon',
+    CACHE_DB_NAME: 'GTA_Weather_Cache_v1',
+    CACHE_STORE_NAME: 'forecast_cache',
+    CACHE_TTL_MS: 10 * 60 * 1000,      // 10 分鐘本地快取有效期
+    TRANSITION_DURATION_SEC: 28.0,     // 天氣狀態切換平滑漸變時間 (秒)
+    ROAD_DRYING_DURATION_SEC: 80.0,    // 雨停後路面乾燥時間 (秒，符合 60~120 秒規範，晴天加速)
+    OPEN_METEO_BASE: 'https://api.open-meteo.com/v1/forecast',
+    // 畫質等級雨粒子上限
+    PARTICLE_COUNTS: {
+      low: 1200,                       // 低畫質 (< 1500)
+      medium: 3200,                    // 中畫質
+      high: 6500                       // 高畫質
+    },
+    SPLASH_COUNTS: {
+      low: 0,                          // 低畫質無水花
+      medium: 120,                     // 中畫質
+      high: 280                        // 高畫質地面水花
+    },
+    // 閃電設定
+    LIGHTNING: {
+      MIN_INTERVAL_SEC: 9.0,
+      MAX_INTERVAL_SEC: 22.0,
+      FLASH_DURATION_SEC: 0.12,
+      SURGE_LIGHT_INTENSITY: 4.8
+    }
+  },
+
+  AUDIO: {
+    MASTER_VOLUME: 0.8,
+    WEATHER_VOLUME: 0.7,
+    OCCLUSION_FILTER_FREQ: 550,        // 進入騎樓/室內時之低通濾波截止頻率 (Hz)
+    OPEN_AIR_FILTER_FREQ: 20000        // 開放街道正常頻率 (Hz)
+  },
+
+  // GTA 風格城市夜景假光與氛圍系統配置 (RULES.md 規範集中化)
+  NIGHT_LIGHTING: {
+    ENABLED: true,
+    DEFAULT_PRESET: 'ground_visible' as 'ground_visible' | 'gta_contrast' | 'soft' | 'dim',
+    PRESETS: {
+      ground_visible: {
+        id: 'ground_visible',
+        name: '地面可見（預設）',
+        hemiIntensity: 0.22,     // 環境光 22% 白天，確保無路燈區域地板可見
+        moonIntensity: 0.12,     // 虛擬/真實月光 12% 白天
+        bounceIntensity: 0.06,   // 暖色反射補光 6% 白天
+        exposure: 1.22,          // 曝光上限 1.22
+        lightPollution: 0.50     // 天空光害
+      },
+      gta_contrast: {
+        id: 'gta_contrast',
+        name: 'GTA 對比',
+        hemiIntensity: 0.20,     // 環境光 20% 白天
+        moonIntensity: 0.10,     // 虛擬/真實月光 10% 白天
+        bounceIntensity: 0.05,   // 暖色反射補光 5% 白天
+        exposure: 1.20,          // 曝光上限 1.20
+        lightPollution: 0.50     // 天空光害
+      },
+      soft: {
+        id: 'soft',
+        name: '柔和',
+        hemiIntensity: 0.25,
+        moonIntensity: 0.13,
+        bounceIntensity: 0.06,
+        exposure: 1.25,
+        lightPollution: 0.70
+      },
+      dim: {
+        id: 'dim',
+        name: '昏暗',
+        hemiIntensity: 0.16,
+        moonIntensity: 0.08,
+        bounceIntensity: 0.04,
+        exposure: 1.15,
+        lightPollution: 0.35
+      }
+    },
+    BASE_NIGHT_BRIGHTNESS: 1.0,        // 夜晚亮度倍率 (僅調節月光與環境光強度，0.6 ~ 1.4，預設 1.0)
+    GROUND_VISIBILITY: 1.0,            // 地面可見度倍率 (0.5 ~ 2.0，預設 1.0，驅動 Shader 地面補光)
+    COLOR_GROUND_NIGHT_BOOST: '#3a4764', // 地面夜間冷藍灰補光項 (#3a4764，白天強度的 6~9%)
+    STREETLIGHT_GROUND_DECAL_RADIUS: 7.2, // 路燈地面光斑半徑 (m) (6 ~ 9m)
+    STREETLIGHT_GROUND_DECAL_INTENSITY: 1.0, // 光斑貼花強度 (0.0 ~ 2.0)
+    STREETLIGHT_MAX_DISTANCE: 150.0,   // 路燈假光啟用範圍 (m)
+    STREETLIGHT_FLICKER_CHANCE: 0.03,  // 3% 路燈接觸不良隨機閃爍
+    WINDOW_LIGHT_RATIO: 0.50,          // 窗戶夜間亮燈基準比例 (0.0 ~ 1.0)
+    URBAN_LIGHT_POLLUTION: 0.50,       // 天空穹頂城市光害強度 (0.0 ~ 2.0)
+    COLOR_WARM_ORANGE: '#ff9e3b',      // 3000K 暖橘路燈色
+    COLOR_WARM_WHITE: '#fff0d0',       // 4500K 暖白路燈色
+    HEMI_SKY_COLOR: '#2a3d70',         // 環境光天空冷藍 (#2a3d70)
+    HEMI_GROUND_COLOR: '#6b3f22',      // 環境光地面暖橘棕 (#6b3f22，街道鈉燈反彈)
+    COLOR_MOON_BLUE: '#6f8cff',        // 虛擬月光冷藍 (#6f8cff)
+    COLOR_BOUNCE_ORANGE: '#ff8844',    // 街道向上反射暖橘補光 (#ff8844)
+    COLOR_NIGHT_FOG: '#141c33',        // 夜間近景暗藍霧色 (#141c33)
+    COLOR_TARGET_MIN_SHADOW: '#0c1220',// 最暗處目標值 (#0c1220)
+    EXPOSURE_BOOST_NIGHT: 1.25,        // 夜間眼睛適應曝光拉高上限 (1.25 倍)
+    EXPOSURE_LERP_SPEED: 0.10,         // 曝光緩慢過渡 (約 10 秒)
+    WET_REFLECTION_INTENSITY: 0.65,    // 雨夜長條倒影強度
+    LIGHT_CONE_BOTTOM_RADIUS: 2.0,     // 光錐底部半徑 (寬度約 4.0m)
+    LIGHT_CONE_OPACITY: 0.07           // 光錐低透明度
+  },
+
+  // NPC 行人與車輛行為規範配置 (RULES.md 集中化管理)
+  NPC_BEHAVIOR: {
+    // 違規全域開關與機率
+    violationsEnabled: true,
+    VIOLATIONS: {
+      pedestrian: {
+        totalRate: 0.06,           // 合計約占過街行人的 6%
+        jaywalkRedLight: 0.03,      // 紅燈或閃爍時搶過斑馬線 (約 3%)
+        crossNoZebra: 0.02,         // 無斑馬線處直接穿越馬路 (約 2%)
+        walkOnRoadEdge: 0.01        // 貼著車流行走 (約 1%)
+      },
+      vehicle: {
+        totalRate: 0.05,           // 合計約占車輛的 5%
+        earlyRedRun: 0.02,          // 趕時間型紅燈初期 1.5s 內搶過 (約 2%)
+        speeding: 0.02,             // 超速 15~30% (約 2%)
+        pressCrosswalk: 0.01,       // 停等時壓到斑馬線 (約 1%)
+        scooterSidewalkShortcut: 0.01 // 機車騎上人行道短暫繞行 (約 1%)
+      }
+    },
+    // 車輛不可反方向規範
+    VEHICLE: {
+      RIGHT_HAND_TRAFFIC: true,     // 台灣靠右行駛
+      NO_REVERSE_ALLOWED: true,     // NPC 車輛禁止倒車
+      WRONG_WAY_MAX_SEC: 0.5,       // dot(車頭, 速度) < 0 超過 0.5s 判定逆向重新生成
+      BLOCKED_TIMEOUT_SEC: 12.0     // 被完全堵塞超過 12 秒原地重新生成
+    },
+    // 行人聚集與個人空間
+    PEDESTRIAN: {
+      MIN_SPAWN_SPACING: 6.0,       // 同一人行道不相關行人生成點至少相距 6m
+      GRID_DENSITY_LIMIT_NORMAL: 4, // 10x10m 格子上限 4 人
+      GRID_DENSITY_LIMIT_HOTSPOT: 8,// 熱點 (火車站、溫泉廣場) 上限 8 人
+      SEPARATION_RADIUS: 0.7,       // 個人空間半徑 0.7m
+      SEPARATION_FORCE: 8.0,        // 分離力道 (保證身體不重疊)
+      SPEED_VARIATION: 0.20,        // 速度 ±20% 隨機差異
+      START_DELAY_MAX: 3.0,         // 0~3 秒隨機起步延遲
+      // 結伴同行組
+      COMPANION_GROUP_CHANCE: 0.08, // 結伴同行組比例約 8%
+      COMPANION_SPACING_MIN: 0.8,   // 組內間距 0.8m
+      COMPANION_SPACING_MAX: 1.2,   // 組內間距 1.2m
+      // 等紅燈路緣站位
+      CURB_WAITING_SLOT_SPACING: 0.8, // 路緣站位相距約 0.8m
+      MAX_WAITING_SLOTS: 6,         // 最多 6 個站位
+      // 聚集統計門檻
+      CROWD_DISTANCE_THRESHOLD: 1.2,// 1.2 公尺內有 2 位以上非同伴
+      CROWD_RATE_TARGET_PERCENT: 3.0// 目標低於 3%
+    },
+    // 行人只走斑馬線過街
+    CROSSWALK: {
+      MAX_LATERAL_OFFSET: 0.8,      // 沿斑馬線中心線橫向偏移不超過 0.8m
+      MAX_DRIFT_PULLBACK: 1.0,      // 偏離超過 1.0m 自動拉回
+      LONG_ROAD_THRESHOLD: 150.0    // 長路段 (>150m) 導航至最近斑馬線
+    },
+    // 行人不倒退走
+    NO_WALK_BACKWARDS: {
+      MAX_TURN_RATE_DEG_PER_SEC: 360, // 平滑轉向最大速度 360 度/秒
+      TURN_AROUND_TIME_MIN: 0.3,      // 原地轉身時間 0.3~0.6s
+      TURN_AROUND_TIME_MAX: 0.6,
+      REVERSE_ANGLE_THRESHOLD_DEG: 70, // 夾角超過 70 度速度降為 0 先原地轉身
+      WRONG_FACING_TIMEOUT_SEC: 0.3   // dot(面向, 速度) < 0 超過 0.3 秒強制修正轉向
+    },
+    // 效能自動降級
+    PERFORMANCE: {
+      FPS_DOWNGRADE_THRESHOLD: 30,    // 連續 3 秒 FPS < 30 觸發降級
+      DOWNGRADE_CHECK_SECONDS: 3.0
     }
   }
 };

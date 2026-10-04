@@ -9,7 +9,7 @@
  * 5. 結合周邊車站、溫泉、商店資料計算各節點之人口密度權重
  */
 
-import { Point2D, RoadFeature, BuildingFeature, ShopFeature } from './OsmTypes.ts';
+import { Point2D, RoadFeature, BuildingFeature, ShopFeature, IntersectionFeature } from './OsmTypes.ts';
 import { PedestrianNode, PedestrianNetworkData, CrosswalkGroup } from './PedestrianTypes.ts';
 import { CONFIG } from '../config.ts';
 
@@ -20,7 +20,8 @@ export class PedestrianNetworkBuilder {
   public static buildNetwork(
     roads: RoadFeature[],
     buildings: BuildingFeature[] = [],
-    shops: ShopFeature[] = []
+    shops: ShopFeature[] = [],
+    intersections: IntersectionFeature[] = []
   ): PedestrianNetworkData {
     const nodes: PedestrianNode[] = [];
     const SNAP_TOLERANCE = 1.6; // 1.6 公尺內吸附合併頂點
@@ -60,7 +61,12 @@ export class PedestrianNetworkBuilder {
       return id;
     };
 
-    const addEdge = (from: number, to: number, type: 'sidewalk' | 'arcade' | 'crosswalk' | 'path') => {
+    const addEdge = (
+      from: number,
+      to: number,
+      type: 'sidewalk' | 'arcade' | 'crosswalk' | 'path',
+      crossingId?: string
+    ) => {
       if (from === to) return;
       const nFrom = nodes[from];
       const nTo = nodes[to];
@@ -73,7 +79,8 @@ export class PedestrianNetworkBuilder {
           target: to,
           distance: dist,
           type,
-          isCrosswalk: type === 'crosswalk'
+          isCrosswalk: type === 'crosswalk',
+          crossingId
         });
       }
       if (!nTo.edges.some((e) => e.target === from)) {
@@ -81,7 +88,8 @@ export class PedestrianNetworkBuilder {
           target: from,
           distance: dist,
           type,
-          isCrosswalk: type === 'crosswalk'
+          isCrosswalk: type === 'crosswalk',
+          crossingId
         });
       }
     };
@@ -206,31 +214,33 @@ export class PedestrianNetworkBuilder {
           }
           prevRight = curr;
         }
+      }
+    }
 
-        // 在道路端點與中段適當距離 (約每 50~70m) 建立過街斑馬線邊
-        const segSteps = Math.max(5, Math.floor(subRoadPts.length / 4));
-        for (let i = 0; i < subRoadPts.length; i += segSteps) {
-          const leftNode = leftNodeIds[i];
-          const rightNode = rightNodeIds[i];
-          if (leftNode !== undefined && rightNode !== undefined && leftNode !== rightNode) {
-            const groupId = nextCrosswalkGroupId++;
-            nodes[leftNode].isCrosswalk = true;
-            nodes[leftNode].crosswalkGroupId = groupId;
-            nodes[rightNode].isCrosswalk = true;
-            nodes[rightNode].crosswalkGroupId = groupId;
+    // 2. 僅從真實路口斑馬線 (IntersectionCrossings) 建立過街穿越道邊
+    for (const inter of intersections) {
+      for (const cross of (inter.crossings || [])) {
+        const groupId = nextCrosswalkGroupId++;
+        const n1 = getOrAddNode(cross.p1, true, false, groupId);
+        const n2 = getOrAddNode(cross.p2, true, false, groupId);
+        cross.pedestrianNodeIds = [n1, n2];
 
-            addEdge(leftNode, rightNode, 'crosswalk');
+        addEdge(n1, n2, 'crosswalk', cross.id);
 
-            crosswalkGroups.push({
-              id: groupId,
-              nodeIds: [leftNode, rightNode],
-              center: {
-                x: (nodes[leftNode].x + nodes[rightNode].x) * 0.5,
-                z: (nodes[leftNode].z + nodes[rightNode].z) * 0.5
-              }
-            });
-          }
-        }
+        crosswalkGroups.push({
+          id: groupId,
+          crossingId: cross.id,
+          nodeIds: [n1, n2],
+          center: { x: cross.center.x, z: cross.center.z },
+          p1: { x: cross.p1.x, z: cross.p1.z },
+          p2: { x: cross.p2.x, z: cross.p2.z },
+          width: cross.width,
+          length: cross.length
+        });
+
+        // 將斑馬線端點連通至最近的人行道節點，確保行人能自然步入與步出斑馬線
+        this.connectCrosswalkEndpointToSidewalk(nodes, n1, [n1, n2], addEdge);
+        this.connectCrosswalkEndpointToSidewalk(nodes, n2, [n1, n2], addEdge);
       }
     }
 
@@ -321,6 +331,44 @@ export class PedestrianNetworkBuilder {
 
     if (bestNode !== -1) {
       addEdge(targetNodeId, bestNode, 'arcade');
+    }
+  }
+
+  /**
+   * 將斑馬線端點連通至最近的人行道節點 (避免孤立)
+   */
+  private static connectCrosswalkEndpointToSidewalk(
+    nodes: PedestrianNode[],
+    targetNodeId: number,
+    excludeNodeIds: number[],
+    addEdge: (from: number, to: number, type: 'sidewalk' | 'arcade' | 'crosswalk' | 'path', crossingId?: string) => void
+  ): void {
+    const target = nodes[targetNodeId];
+    const candidates: Array<{ id: number; dist: number }> = [];
+
+    for (const n of nodes) {
+      if (n.id === targetNodeId || excludeNodeIds.includes(n.id) || n.isCrosswalk) continue;
+      const d = Math.hypot(n.x - target.x, n.z - target.z);
+      if (d <= 18.0) {
+        candidates.push({ id: n.id, dist: d });
+      }
+    }
+
+    // 若 18m 內沒有純人行道點，擴大搜索至任何非自身節點
+    if (candidates.length === 0) {
+      for (const n of nodes) {
+        if (n.id === targetNodeId || excludeNodeIds.includes(n.id)) continue;
+        const d = Math.hypot(n.x - target.x, n.z - target.z);
+        if (d <= 25.0) {
+          candidates.push({ id: n.id, dist: d });
+        }
+      }
+    }
+
+    candidates.sort((a, b) => a.dist - b.dist);
+    const toConnect = candidates.slice(0, 2);
+    for (const c of toConnect) {
+      addEdge(targetNodeId, c.id, 'sidewalk');
     }
   }
 

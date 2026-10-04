@@ -10,6 +10,60 @@ import { PolygonFeature } from '../geo/OsmTypes.ts';
 export class TerrainFeatureGenerator {
   private waterMesh: THREE.Mesh | null = null;
   private greenMesh: THREE.Mesh | null = null;
+  private waterMaterial: THREE.MeshStandardMaterial | null = null;
+  private greenMaterial: THREE.MeshStandardMaterial | null = null;
+  private nightFactor = 0.0;
+  private groundVisibility = 1.0;
+
+  private injectNightGroundShader(mat: THREE.MeshStandardMaterial, boostRate = 0.075): void {
+    mat.userData.nightUniforms = {
+      uNightFactor: { value: this.nightFactor },
+      uGroundVisibility: { value: this.groundVisibility },
+      uGroundNightBoost: { value: boostRate }
+    };
+
+    mat.onBeforeCompile = (shader) => {
+      shader.uniforms.uNightFactor = mat.userData.nightUniforms.uNightFactor;
+      shader.uniforms.uGroundVisibility = mat.userData.nightUniforms.uGroundVisibility;
+      shader.uniforms.uGroundNightBoost = mat.userData.nightUniforms.uGroundNightBoost;
+
+      shader.fragmentShader = `
+        uniform float uNightFactor;
+        uniform float uGroundVisibility;
+        uniform float uGroundNightBoost;
+      ` + shader.fragmentShader;
+
+      shader.fragmentShader = shader.fragmentShader.replace(
+        '#include <dithering_fragment>',
+        `
+        #include <dithering_fragment>
+        vec3 cGroundNight = vec3(0.227, 0.278, 0.392);
+        float boost = uGroundNightBoost * uNightFactor * uGroundVisibility;
+        gl_FragColor.rgb += cGroundNight * boost;
+        `
+      );
+    };
+  }
+
+  public setNightFactor(factor: number): void {
+    this.nightFactor = factor;
+    if (this.waterMaterial?.userData.nightUniforms) {
+      this.waterMaterial.userData.nightUniforms.uNightFactor.value = factor;
+    }
+    if (this.greenMaterial?.userData.nightUniforms) {
+      this.greenMaterial.userData.nightUniforms.uNightFactor.value = factor;
+    }
+  }
+
+  public setGroundVisibility(val: number): void {
+    this.groundVisibility = val;
+    if (this.waterMaterial?.userData.nightUniforms) {
+      this.waterMaterial.userData.nightUniforms.uGroundVisibility.value = val;
+    }
+    if (this.greenMaterial?.userData.nightUniforms) {
+      this.greenMaterial.userData.nightUniforms.uGroundVisibility.value = val;
+    }
+  }
 
   public generate(features: PolygonFeature[], scene: THREE.Scene): void {
     this.dispose(scene);
@@ -78,15 +132,16 @@ export class TerrainFeatureGenerator {
       waterGeo.setAttribute('normal', new THREE.Float32BufferAttribute(waterNormals, 3));
       waterGeo.setIndex(waterIndices);
 
-      const waterMat = new THREE.MeshStandardMaterial({
+      this.waterMaterial = new THREE.MeshStandardMaterial({
         color: CONFIG.FEATURES.WATER_COLOR,
         roughness: 0.2,
         metalness: 0.1,
         transparent: true,
         opacity: 0.92
       });
+      this.injectNightGroundShader(this.waterMaterial);
 
-      this.waterMesh = new THREE.Mesh(waterGeo, waterMat);
+      this.waterMesh = new THREE.Mesh(waterGeo, this.waterMaterial);
       this.waterMesh.receiveShadow = true;
       this.waterMesh.name = 'WaterMesh';
       scene.add(this.waterMesh);
@@ -100,13 +155,14 @@ export class TerrainFeatureGenerator {
       greenGeo.setAttribute('color', new THREE.Float32BufferAttribute(greenColors, 3));
       greenGeo.setIndex(greenIndices);
 
-      const greenMat = new THREE.MeshStandardMaterial({
+      this.greenMaterial = new THREE.MeshStandardMaterial({
         vertexColors: true,
         roughness: 0.9,
         metalness: 0.05
       });
+      this.injectNightGroundShader(this.greenMaterial);
 
-      this.greenMesh = new THREE.Mesh(greenGeo, greenMat);
+      this.greenMesh = new THREE.Mesh(greenGeo, this.greenMaterial);
       this.greenMesh.receiveShadow = true;
       this.greenMesh.name = 'GreenMesh';
       scene.add(this.greenMesh);
@@ -119,12 +175,14 @@ export class TerrainFeatureGenerator {
       this.waterMesh.geometry.dispose();
       (this.waterMesh.material as THREE.Material).dispose();
       this.waterMesh = null;
+      this.waterMaterial = null;
     }
     if (this.greenMesh) {
       scene.remove(this.greenMesh);
       this.greenMesh.geometry.dispose();
       (this.greenMesh.material as THREE.Material).dispose();
       this.greenMesh = null;
+      this.greenMaterial = null;
     }
   }
 }

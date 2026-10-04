@@ -10,7 +10,7 @@
  * 6. 生成懸臂式號誌桿之位置與朝向
  */
 
-import { Point2D, RoadFeature, TrafficSignalFeature, IntersectionFeature, IntersectionApproach, IntersectionCrossing, TrafficSignalPoleConfig, SignalPhaseGroup } from './OsmTypes.ts';
+import { Point2D, RoadFeature, TrafficSignalFeature, IntersectionFeature, IntersectionApproach, IntersectionCrossing, TrafficSignalPoleConfig, SignalPhaseGroup, StopLine } from './OsmTypes.ts';
 import { CONFIG } from '../config.ts';
 
 const MAJOR_ROAD_TYPES = new Set([
@@ -39,7 +39,7 @@ export class TrafficIntersectionBuilder {
     // 2. 空間聚類：30 公尺內的交叉節點與號誌點歸入同一路口
     const clusters = this.clusterNodesAndSignals(rawNodes, rawSignals, clusterRadius);
 
-    // 3. 針對每個聚類構建路口特性 (Approaches, Phases, Crossings, Poles)
+    // 3. 針對每個聚類構建路口特性 (Approaches, Phases, Crossings, Poles, StopLines)
     const intersections: IntersectionFeature[] = [];
     let interIdx = 0;
 
@@ -57,8 +57,9 @@ export class TrafficIntersectionBuilder {
       // 方位角雙相位分配 (Group A vs Group B)
       this.assignSignalPhaseGroups(approaches);
 
-      // 行人穿越道關聯 (Crossings)
+      // 行人穿越道關聯 (Crossings) 與單一資料來源停止線 (StopLines)
       const crossings = this.buildCrossings(id, center, radius, approaches);
+      const stopLines = this.buildStopLines(id, center, radius, approaches, crossings);
 
       // 號誌來源與設置判定 (OSM 或 Auto 自動補齊)
       const hasOsmSignals = cluster.signalIds.length > 0;
@@ -90,6 +91,7 @@ export class TrafficIntersectionBuilder {
         hasSignals,
         approaches,
         crossings,
+        stopLines,
         poles,
         osmSignalIds: cluster.signalIds
       });
@@ -289,27 +291,6 @@ export class TrafficIntersectionBuilder {
       avgAzimuth /= count;
 
       // 計算停止線幾何 (寬度垂直方向)
-      const forwardX = Math.sin(avgAzimuth);
-      const forwardZ = Math.cos(avgAzimuth);
-      const rightX = -forwardZ;
-      const rightZ = forwardX;
-
-      const halfW = Math.max(2.5, bestWidth * 0.5);
-      const stopLineP1: Point2D = {
-        x: a1.entryPoint.x - rightX * halfW,
-        z: a1.entryPoint.z - rightZ * halfW
-      };
-      const stopLineP2: Point2D = {
-        x: a1.entryPoint.x + rightX * (halfW * 0.1), // 劃在右側進路車道
-        z: a1.entryPoint.z + rightZ * (halfW * 0.1)
-      };
-
-      // 機車待轉區 (停止線前方 1.8m)
-      const waitCenter: Point2D = {
-        x: a1.entryPoint.x + forwardX * 2.0 + rightX * (halfW * 0.5),
-        z: a1.entryPoint.z + forwardZ * 2.0 + rightZ * (halfW * 0.5)
-      };
-
       approaches.push({
         id: `${interId}_app_${approaches.length}`,
         roadName: bestName,
@@ -317,9 +298,8 @@ export class TrafficIntersectionBuilder {
         azimuthRad: avgAzimuth,
         width: bestWidth,
         entryPoint: a1.entryPoint,
-        stopLineP1,
-        stopLineP2,
-        waitingBoxCenter: waitCenter,
+        stopLineP1: { x: 0, z: 0 }, // 由 buildStopLines 統一計算
+        stopLineP2: { x: 0, z: 0 },
         signalGroup: 'A' // 稍後分派
       });
     }
@@ -373,14 +353,22 @@ export class TrafficIntersectionBuilder {
       const app = approaches[i];
       const forwardX = Math.sin(app.azimuthRad);
       const forwardZ = Math.cos(app.azimuthRad);
-      const rightX = -forwardZ;
-      const rightZ = forwardX;
+      const rightX = Math.cos(app.azimuthRad);
+      const rightZ = -Math.sin(app.azimuthRad);
 
       const halfW = Math.max(3.0, app.width * 0.5 + 1.2);
-      // 穿越道設在停止線前方約 1.2m
+      const crossingLength = 3.0; // 斑馬線沿前進方向縱長
+
+      // 斑馬線中心設在路口進路前緣 (中心距離迎車外緣 1.5m)
       const cMid: Point2D = {
-        x: app.entryPoint.x + forwardX * 1.2,
-        z: app.entryPoint.z + forwardZ * 1.2
+        x: app.entryPoint.x + forwardX * (crossingLength * 0.5),
+        z: app.entryPoint.z + forwardZ * (crossingLength * 0.5)
+      };
+
+      // 迎車方向之斑馬線外緣中心
+      const outerEdgeCenter: Point2D = {
+        x: app.entryPoint.x,
+        z: app.entryPoint.z
       };
 
       const p1: Point2D = {
@@ -392,8 +380,7 @@ export class TrafficIntersectionBuilder {
         z: cMid.z + rightZ * halfW
       };
 
-      // 關鍵連動：車輛群組 A 綠燈時，與 A 車流「垂直」的穿越道為綠燈 (即跨越 Group B 道路之穿越道)
-      // 因此跨越 Group A 車道的穿越道，其通行相位為 Group B！
+      // 關鍵連動：車輛群組 A 綠燈時，與 A 車流「垂直」的穿越道為綠燈
       const crossingGroup: SignalPhaseGroup = app.signalGroup === 'A' ? 'B' : 'A';
 
       const crossId = `${interId}_cross_${i}`;
@@ -405,11 +392,116 @@ export class TrafficIntersectionBuilder {
         p2,
         center: cMid,
         width: halfW * 2,
+        length: crossingLength,
+        azimuthRad: app.azimuthRad,
+        outerEdgeCenter,
         signalGroup: crossingGroup
       });
     }
 
     return crossings;
+  }
+
+  /**
+   * 建立單一資料來源停止線 (StopLines)
+   * 依據 RULES.md 與規範：
+   * 1. 停止線設在斑馬線外緣之前 1.5 到 2.0 公尺 (無斑馬線設在路口邊界前 2.0m)
+   * 2. 斑馬線與汽車停止線大於 4m (寬度 >= 6.0m 之路口規劃為 4.5m)，畫出機慢車停等區
+   * 3. 機車停等線設於停等區前緣 (斑馬線前 1.5m)
+   */
+  private static buildStopLines(
+    interId: string,
+    _center: Point2D,
+    _radius: number,
+    approaches: IntersectionApproach[],
+    crossings: IntersectionCrossing[]
+  ): StopLine[] {
+    const stopLines: StopLine[] = [];
+
+    for (let i = 0; i < approaches.length; i++) {
+      const app = approaches[i];
+      const cross = crossings.find((c) => c.id === app.pedestrianCrossingId);
+
+      const forwardX = Math.sin(app.azimuthRad);
+      const forwardZ = Math.cos(app.azimuthRad);
+      const rightX = Math.cos(app.azimuthRad);
+      const rightZ = -Math.sin(app.azimuthRad);
+      const halfRoadW = Math.max(2.5, app.width * 0.5);
+      const laneWidth = halfRoadW;
+      const laneCenterOffset = laneWidth * 0.5;
+
+      const refOuter = cross ? cross.outerEdgeCenter : app.entryPoint;
+
+      // 判斷是否具備設置機慢車停等區之條件 (路寬 >= 6.0m 或主要幹道)
+      const hasScooterBox = app.width >= 6.0 || MAJOR_ROAD_TYPES.has(app.roadType);
+      const carDistToCrosswalk = hasScooterBox ? CONFIG.TRAFFIC_SIGNALS.STOP_LINE_RULES.SCOOTER_BOX_CAR_DISTANCE : CONFIG.TRAFFIC_SIGNALS.STOP_LINE_RULES.CROSSWALK_DISTANCE;
+      const scooterDistToCrosswalk = hasScooterBox ? CONFIG.TRAFFIC_SIGNALS.STOP_LINE_RULES.SCOOTER_BOX_SCOOTER_DISTANCE : CONFIG.TRAFFIC_SIGNALS.STOP_LINE_RULES.CROSSWALK_DISTANCE;
+
+      // 汽車停止線中心位置 (迎車車道中心線上)
+      const stopWorldPos: Point2D = {
+        x: refOuter.x - forwardX * carDistToCrosswalk + rightX * laneCenterOffset,
+        z: refOuter.z - forwardZ * carDistToCrosswalk + rightZ * laneCenterOffset
+      };
+
+      // 停止線端點 (橫跨右側進路車道：自道路中央延伸至右側路緣)
+      const stopLineP1: Point2D = {
+        x: stopWorldPos.x - rightX * (laneWidth * 0.5),
+        z: stopWorldPos.z - rightZ * (laneWidth * 0.5)
+      };
+      const stopLineP2: Point2D = {
+        x: stopWorldPos.x + rightX * (laneWidth * 0.5),
+        z: stopWorldPos.z + rightZ * (laneWidth * 0.5)
+      };
+
+      // 機慢車停等區幾何 (若有)
+      let scooterStopWorldPosition: Point2D | undefined;
+      let scooterBoxCenter: Point2D | undefined;
+      let scooterBoxWidth: number | undefined;
+      let scooterBoxLength: number | undefined;
+
+      if (hasScooterBox) {
+        scooterStopWorldPosition = {
+          x: refOuter.x - forwardX * scooterDistToCrosswalk + rightX * laneCenterOffset,
+          z: refOuter.z - forwardZ * scooterDistToCrosswalk + rightZ * laneCenterOffset
+        };
+        const boxMidDist = (carDistToCrosswalk + scooterDistToCrosswalk) * 0.5;
+        scooterBoxCenter = {
+          x: refOuter.x - forwardX * boxMidDist + rightX * laneCenterOffset,
+          z: refOuter.z - forwardZ * boxMidDist + rightZ * laneCenterOffset
+        };
+        scooterBoxWidth = laneWidth;
+        scooterBoxLength = carDistToCrosswalk - scooterDistToCrosswalk; // 4.5 - 1.5 = 3.0m
+
+        app.waitingBoxCenter = scooterBoxCenter;
+      }
+
+      // 產生單一資料來源 StopLine
+      const stopLine: StopLine = {
+        laneId: `${app.id}_lane`,
+        intersectionId: interId,
+        approachId: app.id,
+        position: 0,
+        worldPosition: stopWorldPos,
+        azimuthRad: app.azimuthRad,
+        p1: stopLineP1,
+        p2: stopLineP2,
+        width: laneWidth,
+        crosswalkEdgeDistance: carDistToCrosswalk,
+        hasScooterWaitingBox: hasScooterBox,
+        scooterStopWorldPosition,
+        scooterBoxCenter,
+        scooterBoxWidth,
+        scooterBoxLength
+      };
+
+      app.stopLine = stopLine;
+      app.stopLineP1 = stopLineP1;
+      app.stopLineP2 = stopLineP2;
+
+      stopLines.push(stopLine);
+    }
+
+    return stopLines;
   }
 
   /**
@@ -437,13 +529,11 @@ export class TrafficIntersectionBuilder {
         z: app.entryPoint.z + rightZ * (halfW + 1.6) - forwardZ * 0.5
       };
 
-      // 橫臂伸向車道上方 (沿 -right 向量延伸)
-      const armAzimuth = Math.atan2(-rightX, -rightZ);
-
+      // 桿身朝向以車流進路方位角為準：local +Z 為進路車流，local -Z 正對來車，local -X 橫跨車道
       poles.push({
         id: `${interId}_pole_${i}`,
         position: polePos,
-        armAzimuthRad: armAzimuth,
+        armAzimuthRad: app.azimuthRad,
         approachId: app.id,
         signalGroup: app.signalGroup,
         hasSecondaryHead: app.width >= 7.5,

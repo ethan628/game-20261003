@@ -664,7 +664,7 @@ export class SignboardGenerator {
     return texture;
   }
 
-  private getShopColorTheme(shop: ShopFeature): { bg: string; accent: string; text: string; tag: string } {
+  public getShopColorTheme(shop: ShopFeature): { bg: string; accent: string; text: string; tag: string } {
     const n = shop.name.toLowerCase();
     const c = shop.category;
     const s = shop.subCategory.toLowerCase();

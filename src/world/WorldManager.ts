@@ -35,8 +35,8 @@ export class WorldManager {
     this.propGen = new PropGenerator();
     this.signboardGen = new SignboardGenerator();
 
-    // 初始化基礎環境光影、天空、PMREM 與地面
-    this.environmentGen.setupSceneEnvironment(this.scene, this.renderer);
+    // 初始化基礎環境地面、PMREM 與大氣微粒 (天空與動態光影由 WeatherRenderer 接管)
+    this.environmentGen.setupSceneEnvironment(this.scene, this.renderer, false);
   }
 
   /**
@@ -48,8 +48,8 @@ export class WorldManager {
     // 1. 自然地貌多邊形（水域、綠地）
     this.terrainGen.generate(data.features, this.scene);
 
-    // 2. 道路、立體人行道、路緣石與路面標線
-    this.roadGen.generate(data.roads, this.scene);
+    // 2. 道路、立體人行道、路緣石與路面標線 (單一資料來源：斑馬線、停止線與機慢車停等區)
+    this.roadGen.generate(data.roads, this.scene, data.intersections || []);
 
     // 3. 建築物 (含 PBR 牆面、反射窗戶、屋頂水塔/冷氣機/天線) 並取得碰撞資料
     this.buildingColliders = this.buildingGen.generate(
@@ -131,6 +131,26 @@ export class WorldManager {
 
   public getCurrentData(): OsmWorldData | null {
     return this.currentData;
+  }
+
+  public getRoadGenerator(): RoadGenerator {
+    return this.roadGen;
+  }
+
+  public getSignboardGenerator(): SignboardGenerator {
+    return this.signboardGen;
+  }
+
+  public getPropGenerator(): PropGenerator {
+    return this.propGen;
+  }
+
+  public getBuildingGenerator(): BuildingGenerator {
+    return this.buildingGen;
+  }
+
+  public getTerrainFeatureGenerator(): TerrainFeatureGenerator {
+    return this.terrainGen;
   }
 
   /**

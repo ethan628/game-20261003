@@ -171,7 +171,8 @@ export class PedestrianDebugVisualizer {
       [PedestrianState.WAITING_CROSSWALK]: [0.98, 0.45, 0.09],// 橙
       [PedestrianState.CROSSING]: [0.23, 0.51, 0.96],         // 藍
       [PedestrianState.EVADING]: [0.66, 0.33, 0.97],          // 紫
-      [PedestrianState.PANIC]: [0.94, 0.27, 0.27]            // 紅
+      [PedestrianState.PANIC]: [0.94, 0.27, 0.27],           // 紅
+      [PedestrianState.HAILING_TAXI]: [0.98, 0.80, 0.08]     // 亮黃 (招手叫計程車)
     };
 
     const nodes = this.networkData?.nodes || [];
@@ -183,14 +184,18 @@ export class PedestrianDebugVisualizer {
         continue;
       }
 
-      // 頭頂立體標記 (y + 1.95m)
+      // 頭頂立體標記 (y + 1.95m)，若為違規者以放大且亮橘色醒目標註
       this.dummyObj.position.set(agent.x, agent.y + 1.95, agent.z);
       this.dummyObj.rotation.set(0, agent.rotationY, 0);
-      this.dummyObj.scale.set(1, 1, 1);
+      if (agent.isViolator) {
+        this.dummyObj.scale.set(1.8, 1.8, 1.8);
+      } else {
+        this.dummyObj.scale.set(1, 1, 1);
+      }
       this.dummyObj.updateMatrix();
       this.markerMesh.setMatrixAt(i, this.dummyObj.matrix);
 
-      const c = stateColors[agent.state] || [1, 1, 1];
+      const c = agent.isViolator ? [1.0, 0.45, 0.0] : (stateColors[agent.state] || [1, 1, 1]);
       this.markerColors[i * 3] = c[0];
       this.markerColors[i * 3 + 1] = c[1];
       this.markerColors[i * 3 + 2] = c[2];

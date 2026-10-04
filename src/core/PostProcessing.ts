@@ -56,21 +56,21 @@ const GTACinematicShader = {
       float luma = dot(color.rgb, vec3(0.2126, 0.7152, 0.0722));
       color.rgb = mix(vec3(luma), color.rgb, saturation);
       
-      // 3. 橘青對比分級 (Teal & Orange)
-      // 暗部增加冷青灰，高光增添夕陽金橘
-      vec3 shadowTeal = vec3(0.08, 0.22, 0.35);
-      vec3 highlightOrange = vec3(1.0, 0.68, 0.38);
+      // 3. 橘青對比分級 (Teal & Orange：暗部偏冷藍、高光偏暖橘，採用乘法調色，絕不全域加法提亮或壓平對比)
+      vec3 shadowTint = vec3(0.92, 0.96, 1.10);
+      vec3 highlightTint = vec3(1.06, 0.98, 0.90);
       
-      float shadowWeight = smoothstep(0.55, 0.05, luma);
-      float highlightWeight = smoothstep(0.45, 0.95, luma);
+      float shadowWeight = smoothstep(0.45, 0.02, luma);
+      float highlightWeight = smoothstep(0.40, 0.90, luma);
       
       vec3 graded = color.rgb;
-      graded += (shadowTeal * shadowWeight - 0.03 * shadowWeight) * tealOrangeStrength;
-      graded = mix(graded, graded * highlightOrange, highlightWeight * tealOrangeStrength * 0.55);
+      graded *= mix(vec3(1.0), shadowTint, shadowWeight * tealOrangeStrength * 0.9);
+      graded *= mix(vec3(1.0), highlightTint, highlightWeight * tealOrangeStrength * 0.7);
       
-      // 4. S-Curve 對比與稍微壓暗 (Darker contrast tone)
-      graded = pow(clamp(graded, 0.0, 1.0), vec3(1.10)); // 壓暗中間調
+      // 4. S-Curve 對比度增強 (加強明暗分層，局部光源更爆發、暗處深沉)
+      graded = clamp(graded, 0.0, 1.0);
       graded = (graded - 0.5) * contrast + 0.5;
+      graded = clamp(graded, 0.0, 1.0);
       
       // 5. 輕微暗角 (Vignette)
       if (vignetteStrength > 0.001) {
@@ -99,6 +99,8 @@ export class PostProcessingManager {
   private currentQuality: 'low' | 'medium' | 'high';
   private sceneCalls = 0;
   private sceneTriangles = 0;
+  private lastBaseRenderTimeMs = 0;
+  private lastPostProcessingTimeMs = 0;
 
   constructor(renderer: THREE.WebGLRenderer, scene: THREE.Scene, camera: THREE.PerspectiveCamera) {
     this.renderer = renderer;
@@ -116,7 +118,9 @@ export class PostProcessingManager {
     this.renderPass = new RenderPass(this.scene, this.camera);
     const origRenderPass = this.renderPass.render.bind(this.renderPass);
     this.renderPass.render = (renderer, writeBuffer, readBuffer, deltaTime, maskActive) => {
+      const t0 = performance.now();
       origRenderPass(renderer, writeBuffer, readBuffer, deltaTime, maskActive);
+      this.lastBaseRenderTimeMs = performance.now() - t0;
       this.sceneCalls = renderer.info.render.calls;
       this.sceneTriangles = renderer.info.render.triangles;
     };
@@ -222,12 +226,24 @@ export class PostProcessingManager {
   }
 
   public render(delta: number): void {
+    const t0 = performance.now();
     if (this.isEnabled && this.composer) {
       this.cinematicPass.uniforms.time.value += delta;
       this.composer.render();
+      const totalTime = performance.now() - t0;
+      this.lastPostProcessingTimeMs = Math.max(0, totalTime - this.lastBaseRenderTimeMs);
     } else {
       this.renderer.render(this.scene, this.camera);
+      this.lastBaseRenderTimeMs = performance.now() - t0;
+      this.lastPostProcessingTimeMs = 0;
     }
+  }
+
+  public getTimingInfo(): { baseRenderMs: number; postProcessingMs: number } {
+    return {
+      baseRenderMs: this.lastBaseRenderTimeMs,
+      postProcessingMs: this.lastPostProcessingTimeMs
+    };
   }
 
   public dispose(): void {

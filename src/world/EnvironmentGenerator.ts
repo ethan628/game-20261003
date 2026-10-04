@@ -31,60 +31,66 @@ export class EnvironmentGenerator {
   /**
    * 設定場景環境光影、天空、霧氣與 PMREM 反射
    */
-  public setupSceneEnvironment(scene: THREE.Scene, renderer?: THREE.WebGLRenderer): void {
-    // 1. 漸層天空穹頂
-    if (!this.skyDome) {
-      this.skyDome = this.createSkyDome();
-      scene.add(this.skyDome);
-    }
+  public setupSceneEnvironment(
+    scene: THREE.Scene,
+    renderer?: THREE.WebGLRenderer,
+    withSkyAndLights: boolean = true
+  ): void {
+    if (withSkyAndLights) {
+      // 1. 漸層天空穹頂
+      if (!this.skyDome) {
+        this.skyDome = this.createSkyDome();
+        scene.add(this.skyDome);
+      }
 
-    // 2. 太陽發光光暈 (Sun Lens Glow Sprite)
-    if (!this.sunSprite) {
-      this.sunSprite = this.createSunSprite();
-      scene.add(this.sunSprite);
-    }
+      // 2. 太陽發光光暈 (Sun Lens Glow Sprite)
+      if (!this.sunSprite) {
+        this.sunSprite = this.createSunSprite();
+        scene.add(this.sunSprite);
+      }
 
-    // 3. 指數霧氣 (FogExp2: 遠景空氣透視，與地平線暖橘粉融為一體)
-    scene.fog = new THREE.FogExp2(
-      CONFIG.WORLD.FOG_COLOR,
-      CONFIG.WORLD.FOG_DENSITY
-    );
-
-    // 4. 半球環境光 (天空天青藍 + 地面暖土棕)
-    if (!this.hemiLight) {
-      this.hemiLight = new THREE.HemisphereLight(
-        CONFIG.WORLD.HEMI_SKY_COLOR,
-        CONFIG.WORLD.HEMI_GROUND_COLOR,
-        CONFIG.WORLD.HEMI_INTENSITY
+      // 3. 指數霧氣 (FogExp2: 遠景空氣透視，與地平線暖橘粉融為一體)
+      scene.fog = new THREE.FogExp2(
+        CONFIG.WORLD.FOG_COLOR,
+        CONFIG.WORLD.FOG_DENSITY
       );
-      this.hemiLight.position.set(0, 100, 0);
-      scene.add(this.hemiLight);
-    }
 
-    // 5. 黃昏主太陽方向光 (高度角約 24 度，暖橘色溫 #ffb066)
-    if (!this.dirLight) {
-      this.dirLight = new THREE.DirectionalLight(
-        CONFIG.WORLD.SUN_COLOR,
-        CONFIG.WORLD.SUN_INTENSITY
-      );
-      this.updateSunPosition(new THREE.Vector3(0, 0, 0));
-      this.dirLight.castShadow = true;
+      // 4. 半球環境光 (天空天青藍 + 地面暖土棕)
+      if (!this.hemiLight) {
+        this.hemiLight = new THREE.HemisphereLight(
+          CONFIG.WORLD.HEMI_SKY_COLOR,
+          CONFIG.WORLD.HEMI_GROUND_COLOR,
+          CONFIG.WORLD.HEMI_INTENSITY
+        );
+        this.hemiLight.position.set(0, 100, 0);
+        scene.add(this.hemiLight);
+      }
 
-      // 陰影相機正交範圍
-      const d = CONFIG.WORLD.SHADOW_CAMERA_RADIUS;
-      this.dirLight.shadow.camera.left = -d;
-      this.dirLight.shadow.camera.right = d;
-      this.dirLight.shadow.camera.top = d;
-      this.dirLight.shadow.camera.bottom = -d;
-      this.dirLight.shadow.camera.near = 20;
-      this.dirLight.shadow.camera.far = 450;
-      this.dirLight.shadow.bias = -0.00025;
+      // 5. 黃昏主太陽方向光 (高度角約 24 度，暖橘色溫 #ffb066)
+      if (!this.dirLight) {
+        this.dirLight = new THREE.DirectionalLight(
+          CONFIG.WORLD.SUN_COLOR,
+          CONFIG.WORLD.SUN_INTENSITY
+        );
+        this.updateSunPosition(new THREE.Vector3(0, 0, 0));
+        this.dirLight.castShadow = true;
 
-      this.dirLight.shadow.mapSize.width = CONFIG.WORLD.SHADOW_MAP_SIZE;
-      this.dirLight.shadow.mapSize.height = CONFIG.WORLD.SHADOW_MAP_SIZE;
+        // 陰影相機正交範圍
+        const d = CONFIG.WORLD.SHADOW_CAMERA_RADIUS;
+        this.dirLight.shadow.camera.left = -d;
+        this.dirLight.shadow.camera.right = d;
+        this.dirLight.shadow.camera.top = d;
+        this.dirLight.shadow.camera.bottom = -d;
+        this.dirLight.shadow.camera.near = 20;
+        this.dirLight.shadow.camera.far = 450;
+        this.dirLight.shadow.bias = -0.00025;
 
-      scene.add(this.dirLight);
-      scene.add(this.dirLight.target);
+        this.dirLight.shadow.mapSize.width = CONFIG.WORLD.SHADOW_MAP_SIZE;
+        this.dirLight.shadow.mapSize.height = CONFIG.WORLD.SHADOW_MAP_SIZE;
+
+        scene.add(this.dirLight);
+        scene.add(this.dirLight.target);
+      }
     }
 
     // 6. 大地基底平面網格 (PBR 粗糙土質/基底)
@@ -339,7 +345,9 @@ export class EnvironmentGenerator {
    * 每幀更新：太陽陰影盒追隨玩家、大氣微粒動態流動
    */
   public updateEnvironment(playerPos: THREE.Vector3, delta = 0.016): void {
-    this.updateSunPosition(playerPos);
+    if (this.dirLight) {
+      this.updateSunPosition(playerPos);
+    }
 
     if (this.skyDome) {
       this.skyDome.position.copy(playerPos);

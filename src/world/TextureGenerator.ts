@@ -130,8 +130,8 @@ export class TextureGenerator {
 
     const heightData = new Float32Array(size * size);
 
-    // 基礎柏油色調 (深灰帶微藍冷調)
-    const baseR = 52, baseG = 56, baseB = 64;
+    // 基礎柏油細節紋理亮度 (校準為中高明度細節遮罩，使與 material.color 相乘後基準反射率不低於 #2a3144)
+    const baseR = 195, baseG = 200, baseB = 210;
     const albedoImg = aCtx.createImageData(size, size);
     const roughImg = rCtx.createImageData(size, size);
 
@@ -158,18 +158,18 @@ export class TextureGenerator {
 
         // 油漬水窪 (中央深色圓形髒污)
         const oilDist = Math.hypot(u - 0.5, v - 0.55);
-        const oilStain = oilDist < 0.2 ? (1 - oilDist / 0.2) * 0.25 : 0;
+        const oilStain = oilDist < 0.2 ? (1 - oilDist / 0.2) * 0.20 : 0;
 
         // 裂縫 (Cracks)
         const crackNoise = Math.abs(this.smoothNoise(u * 24, v * 24) - 0.5);
-        const crack = crackNoise < 0.03 ? 0.35 : 0;
+        const crack = crackNoise < 0.03 ? 0.25 : 0;
 
-        const combinedDarken = tire + oilStain + crack - patch * 0.5;
-        const lum = (macro * 0.3 + micro * 0.7) * 0.25 - combinedDarken;
+        const combinedDarken = tire * 0.6 + oilStain + crack - patch * 0.4;
+        const lum = (macro * 0.2 + micro * 0.8) * 0.20 - combinedDarken;
 
-        const r = Math.min(255, Math.max(20, Math.floor(baseR * (1 + lum))));
-        const g = Math.min(255, Math.max(20, Math.floor(baseG * (1 + lum))));
-        const b = Math.min(255, Math.max(20, Math.floor(baseB * (1 + lum))));
+        const r = Math.min(255, Math.max(30, Math.floor(baseR * (1 + lum))));
+        const g = Math.min(255, Math.max(30, Math.floor(baseG * (1 + lum))));
+        const b = Math.min(255, Math.max(30, Math.floor(baseB * (1 + lum))));
 
         const idx = (y * size + x) * 4;
         albedoImg.data[idx] = r;
@@ -180,13 +180,13 @@ export class TextureGenerator {
         // 高度值供 NormalMap
         heightData[y * size + x] = micro * 0.7 - crack * 0.8;
 
-        // 粗糙度：一般柏油 0.88，油漬 0.35，若是濕潤模式整體降到 0.18~0.35
+        // 粗糙度：一般柏油 0.88，油漬 0.45；濕潤模式下限嚴格保持 >= 0.28 (>=0.25)，避免全黑吸光
         let roughnessVal: number;
         if (isWet) {
-          // 濕潤模式水窪反光
-          roughnessVal = 0.12 + macro * 0.2 - oilStain * 0.1;
+          // 濕潤模式水窪反光 (0.28 ~ 0.42)
+          roughnessVal = 0.28 + macro * 0.14 - oilStain * 0.05;
         } else {
-          roughnessVal = 0.85 + micro * 0.12 - oilStain * 0.55 - tire * 0.2;
+          roughnessVal = 0.86 + micro * 0.10 - oilStain * 0.35 - tire * 0.15;
         }
 
         const rByte = Math.min(255, Math.max(0, Math.floor(roughnessVal * 255)));

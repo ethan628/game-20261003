@@ -10,8 +10,8 @@ self.onmessage = (e: MessageEvent) => {
 
   if (type === 'BUILD_NETWORK') {
     try {
-      const { roads, buildings, shops } = payload;
-      const network = PedestrianNetworkBuilder.buildNetwork(roads, buildings, shops);
+      const { roads, buildings, shops, intersections } = payload;
+      const network = PedestrianNetworkBuilder.buildNetwork(roads, buildings, shops, intersections || []);
       self.postMessage({ type: 'NETWORK_READY', data: network });
     } catch (err: any) {
       self.postMessage({ type: 'NETWORK_ERROR', error: err.message || 'Worker build failed' });

@@ -4,8 +4,8 @@
  * 1. 懸臂式燈桿、燈頭箱體、車輛發光號誌、行人號誌(小綠人/紅人)、倒數計時器、路面標線
  * 2. 全部採用 InstancedMesh 批次繪製，總 Draw Calls 嚴格不超過 6 個 (剛好 6 個)
  * 3. 倒數計時器使用 Texture Atlas 數字字元集，著色器座標動態映射，零額外幾何
- * 4. 僅更新玩家 200 公尺內之路口外觀，逐幀更新耗時控制在 0.3 ms 內
- * 5. 亮燈自發光效果 (PBR Emissive)
+ * 4. 僅更新玩家 300 公尺內之路口外觀，逐幀更新耗時控制在 0.3 ms 內
+ * 5. 亮燈自發光效果 (MeshBasicMaterial + 光暈 Halo + toneMapped: false)
  */
 
 import * as THREE from 'three';
@@ -24,7 +24,7 @@ function createCountdownAtlas(): THREE.CanvasTexture {
   ctx.fillRect(0, 0, 512, 64);
 
   ctx.fillStyle = '#ffffff';
-  ctx.font = 'bold 50px "Courier New", monospace';
+  ctx.font = 'bold 52px "Courier New", monospace';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
 
@@ -40,58 +40,58 @@ function createCountdownAtlas(): THREE.CanvasTexture {
   return tex;
 }
 
-// 產生行人號誌紋理 (128 x 256): 上半紅人、下半小綠人
+// 產生行人號誌紋理 (256 x 512): 上半紅人、下半小綠人
 function createPedSignalAtlas(): THREE.CanvasTexture {
   const canvas = document.createElement('canvas');
-  canvas.width = 128;
-  canvas.height = 256;
+  canvas.width = 256;
+  canvas.height = 512;
   const ctx = canvas.getContext('2d')!;
 
   ctx.fillStyle = '#06080a';
-  ctx.fillRect(0, 0, 128, 256);
+  ctx.fillRect(0, 0, 256, 512);
 
-  // 上格：紅色站立小人
-  ctx.fillStyle = '#ff2222';
-  // 頭
+  // 上半格：紅色站立小人 (背景微暗紅)
+  ctx.fillStyle = '#ff1e1e';
+  // 頭部
   ctx.beginPath();
-  ctx.arc(64, 40, 15, 0, Math.PI * 2);
+  ctx.arc(128, 80, 30, 0, Math.PI * 2);
   ctx.fill();
-  // 身體與站立雙腿
-  ctx.fillRect(52, 60, 24, 38);
-  ctx.fillRect(51, 100, 10, 26);
-  ctx.fillRect(67, 100, 10, 26);
-  ctx.fillRect(38, 64, 10, 28);
-  ctx.fillRect(80, 64, 10, 28);
+  // 身體與雙腿
+  ctx.fillRect(104, 120, 48, 76);
+  ctx.fillRect(102, 200, 20, 52);
+  ctx.fillRect(134, 200, 20, 52);
+  ctx.fillRect(76, 128, 20, 56);
+  ctx.fillRect(160, 128, 20, 56);
 
-  // 下格：綠色快走小綠人
-  ctx.fillStyle = '#00ff77';
+  // 下半格：綠色快走小綠人
+  ctx.fillStyle = '#00ff66';
   ctx.beginPath();
-  ctx.arc(64, 165, 15, 0, Math.PI * 2);
+  ctx.arc(128, 330, 30, 0, Math.PI * 2);
   ctx.fill();
 
   ctx.save();
-  ctx.translate(64, 185);
-  ctx.rotate(0.15);
-  ctx.fillRect(-12, 0, 24, 34);
+  ctx.translate(128, 370);
+  ctx.rotate(0.18);
+  ctx.fillRect(-24, 0, 48, 68);
 
   // 跨步雙腿
   ctx.beginPath();
-  ctx.moveTo(-6, 34);
-  ctx.lineTo(-20, 64);
-  ctx.lineTo(-10, 65);
-  ctx.lineTo(2, 36);
+  ctx.moveTo(-12, 68);
+  ctx.lineTo(-40, 128);
+  ctx.lineTo(-20, 130);
+  ctx.lineTo(4, 72);
   ctx.fill();
 
   ctx.beginPath();
-  ctx.moveTo(6, 34);
-  ctx.lineTo(20, 64);
-  ctx.lineTo(10, 65);
-  ctx.lineTo(-2, 36);
+  ctx.moveTo(12, 68);
+  ctx.lineTo(40, 128);
+  ctx.lineTo(20, 130);
+  ctx.lineTo(-4, 72);
   ctx.fill();
 
   // 擺手
-  ctx.fillRect(-22, 6, 8, 22);
-  ctx.fillRect(14, 6, 8, 22);
+  ctx.fillRect(-44, 12, 16, 44);
+  ctx.fillRect(28, 12, 16, 44);
   ctx.restore();
 
   const tex = new THREE.CanvasTexture(canvas);
@@ -157,9 +157,9 @@ export class TrafficSignalRenderer {
   private maxMarkings: number = 300;
 
   // 6 個獨立 InstancedMesh (剛好 6 個 Draw Calls)
-  private poleMesh!: THREE.InstancedMesh;         // Draw Call 1: 燈桿與懸臂
-  private housingMesh!: THREE.InstancedMesh;      // Draw Call 2: 燈頭箱體與遮光罩
-  private vehicleLightMesh!: THREE.InstancedMesh; // Draw Call 3: 車輛三色燈盤
+  private poleMesh!: THREE.InstancedMesh;         // Draw Call 1: 燈桿立柱、橫臂與警示條紋
+  private housingMesh!: THREE.InstancedMesh;      // Draw Call 2: 黑色燈頭箱體與遮光罩
+  private vehicleLightMesh!: THREE.InstancedMesh; // Draw Call 3: 車輛三色燈盤與光暈
   private pedSignalMesh!: THREE.InstancedMesh;    // Draw Call 4: 行人號誌盤 (小綠人/紅人)
   private countdownMesh!: THREE.InstancedMesh;    // Draw Call 5: 倒數計時數字盤
   private roadMarkingMesh!: THREE.InstancedMesh;  // Draw Call 6: 停止線與機車待轉區
@@ -201,15 +201,14 @@ export class TrafficSignalRenderer {
    * 初始化 6 個 InstancedMesh 與材質
    */
   private initMeshes(): void {
-    const vis = CONFIG.TRAFFIC_SIGNALS.VISUAL;
-
-    // 1. 燈桿與懸臂幾何體 (Draw Call 1)
+    // 1. 燈桿與懸臂幾何體 (Draw Call 1: 台灣風格黃黑條紋底座 + 深灰立桿 + 橫跨車道橫臂)
     const poleGeom = this.createPoleGeometry();
     poleGeom.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 0, 0), 100000);
     const poleMat = new THREE.MeshStandardMaterial({
-      color: vis.POLE_COLOR,
+      vertexColors: true,
       roughness: 0.65,
-      metalness: 0.25
+      metalness: 0.25,
+      side: THREE.DoubleSide
     });
     this.poleMesh = new THREE.InstancedMesh(poleGeom, poleMat, this.maxPoles);
     this.poleMesh.name = 'SignalPoleMesh';
@@ -217,13 +216,14 @@ export class TrafficSignalRenderer {
     this.poleMesh.receiveShadow = true;
     this.poleMesh.frustumCulled = false;
 
-    // 2. 燈頭箱體與遮光罩幾何體 (Draw Call 2)
+    // 2. 燈頭箱體與遮光罩幾何體 (Draw Call 2: 黑色霧面外殼)
     const housingGeom = this.createHousingGeometry();
     housingGeom.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 0, 0), 100000);
     const housingMat = new THREE.MeshStandardMaterial({
-      color: vis.HOUSING_COLOR,
+      color: 0x11161d,
       roughness: 0.85,
-      metalness: 0.1
+      metalness: 0.1,
+      side: THREE.DoubleSide
     });
     this.housingMesh = new THREE.InstancedMesh(housingGeom, housingMat, this.maxPoles);
     this.housingMesh.name = 'SignalHousingMesh';
@@ -231,7 +231,7 @@ export class TrafficSignalRenderer {
     this.housingMesh.receiveShadow = true;
     this.housingMesh.frustumCulled = false;
 
-    // 3. 車輛三色燈盤 (Draw Call 3)
+    // 3. 車輛三色燈盤與發光光暈 (Draw Call 3: MeshBasicMaterial + 自發光著色器)
     const vLightGeom = this.createVehicleLightGeometry();
     vLightGeom.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 0, 0), 100000);
 
@@ -239,16 +239,18 @@ export class TrafficSignalRenderer {
     this.vehicleStateAttr.setUsage(THREE.DynamicDrawUsage);
     vLightGeom.setAttribute('aVehicleState', this.vehicleStateAttr);
 
-    const vLightMat = new THREE.MeshStandardMaterial({
-      roughness: 0.3,
-      metalness: 0.1
+    const vLightMat = new THREE.MeshBasicMaterial({
+      side: THREE.DoubleSide,
+      transparent: true,
+      depthWrite: false,
+      toneMapped: false
     });
     vLightMat.onBeforeCompile = (shader) => {
       shader.vertexShader = `
         attribute float aLightType; // 0=Green, 1=Yellow, 2=Red
+        attribute float aIsHalo;    // 0=實心燈面, 1=擴散光暈
         attribute float aVehicleState; // 0=Green, 1=Yellow, 2=Red, 3=FlashYellow
-        varying vec3 vLightColor;
-        varying float vIsLit;
+        varying vec4 vLightColor;
       ` + shader.vertexShader;
 
       shader.vertexShader = shader.vertexShader.replace(
@@ -256,47 +258,47 @@ export class TrafficSignalRenderer {
         `
         #include <begin_vertex>
         float lit = 0.0;
-        vec3 col = vec3(0.08, 0.08, 0.08);
+        vec3 col = vec3(0.06, 0.06, 0.06);
 
         if (aVehicleState < 0.5) { // 綠燈
-          if (aLightType < 0.5) { lit = 1.0; col = vec3(0.0, 0.95, 0.4); }
-          else if (aLightType < 1.5) { col = vec3(0.15, 0.12, 0.02); }
-          else { col = vec3(0.18, 0.04, 0.04); }
+          if (aLightType < 0.5) { lit = 1.0; col = vec3(0.0, 1.0, 0.42); }
+          else if (aLightType < 1.5) { col = vec3(0.12, 0.09, 0.02); }
+          else { col = vec3(0.14, 0.03, 0.03); }
         } else if (aVehicleState < 1.5) { // 黃燈
-          if (aLightType > 0.5 && aLightType < 1.5) { lit = 1.0; col = vec3(1.0, 0.75, 0.0); }
-          else if (aLightType < 0.5) { col = vec3(0.02, 0.15, 0.06); }
-          else { col = vec3(0.18, 0.04, 0.04); }
+          if (aLightType > 0.5 && aLightType < 1.5) { lit = 1.0; col = vec3(1.0, 0.80, 0.0); }
+          else if (aLightType < 0.5) { col = vec3(0.03, 0.12, 0.05); }
+          else { col = vec3(0.14, 0.03, 0.03); }
         } else if (aVehicleState < 2.5) { // 紅燈
           if (aLightType > 1.5) { lit = 1.0; col = vec3(1.0, 0.12, 0.12); }
-          else if (aLightType < 0.5) { col = vec3(0.02, 0.15, 0.06); }
-          else { col = vec3(0.15, 0.12, 0.02); }
+          else if (aLightType < 0.5) { col = vec3(0.03, 0.12, 0.05); }
+          else { col = vec3(0.12, 0.09, 0.02); }
         } else { // 閃黃燈
-          if (aLightType > 0.5 && aLightType < 1.5) { lit = 1.0; col = vec3(1.0, 0.75, 0.0); }
+          if (aLightType > 0.5 && aLightType < 1.5) { lit = 1.0; col = vec3(1.0, 0.80, 0.0); }
         }
 
-        vLightColor = col;
-        vIsLit = lit;
+        float alpha = 1.0;
+        if (aIsHalo > 0.5) {
+          if (lit > 0.5) {
+            alpha = 0.55;
+          } else {
+            alpha = 0.0;
+          }
+        }
+
+        vLightColor = vec4(col, alpha);
         `
       );
 
       shader.fragmentShader = `
-        varying vec3 vLightColor;
-        varying float vIsLit;
+        varying vec4 vLightColor;
       ` + shader.fragmentShader;
 
       shader.fragmentShader = shader.fragmentShader.replace(
         '#include <color_fragment>',
         `
         #include <color_fragment>
-        diffuseColor.rgb = vLightColor;
-        `
-      );
-
-      shader.fragmentShader = shader.fragmentShader.replace(
-        '#include <emissivemap_fragment>',
-        `
-        #include <emissivemap_fragment>
-        totalEmissiveRadiance = vLightColor * (vIsLit * 2.2);
+        diffuseColor = vLightColor;
+        if (diffuseColor.a < 0.01) discard;
         `
       );
     };
@@ -314,10 +316,10 @@ export class TrafficSignalRenderer {
     pedGeom.setAttribute('aPedState', this.pedStateAttr);
 
     const pedTex = createPedSignalAtlas();
-    const pedMat = new THREE.MeshStandardMaterial({
+    const pedMat = new THREE.MeshBasicMaterial({
       map: pedTex,
-      roughness: 0.4,
-      metalness: 0.0
+      side: THREE.DoubleSide,
+      toneMapped: false
     });
     pedMat.onBeforeCompile = (shader) => {
       shader.uniforms.uTime = this.globalUniforms.uTime;
@@ -337,7 +339,7 @@ export class TrafficSignalRenderer {
           if (aPedSlot > 0.5) lit = 1.0;
         } else if (aPedState < 1.5) { // 閃爍 Flashing
           if (aPedSlot > 0.5) {
-            lit = step(0.5, fract(uTime * 2.5));
+            lit = step(0.5, fract(uTime * 3.0));
           }
         } else { // 紅燈 DontWalk
           if (aPedSlot < 0.5) lit = 1.0;
@@ -354,15 +356,7 @@ export class TrafficSignalRenderer {
         '#include <color_fragment>',
         `
         #include <color_fragment>
-        diffuseColor.rgb *= (0.15 + vPedLit * 0.85);
-        `
-      );
-
-      shader.fragmentShader = shader.fragmentShader.replace(
-        '#include <emissivemap_fragment>',
-        `
-        #include <emissivemap_fragment>
-        totalEmissiveRadiance = diffuseColor.rgb * (vPedLit * 2.0);
+        diffuseColor.rgb *= (0.16 + vPedLit * 0.84);
         `
       );
     };
@@ -380,10 +374,10 @@ export class TrafficSignalRenderer {
     countdownGeom.setAttribute('aCountdownData', this.countdownAttr);
 
     const countdownTex = createCountdownAtlas();
-    const countdownMat = new THREE.MeshStandardMaterial({
+    const countdownMat = new THREE.MeshBasicMaterial({
       map: countdownTex,
-      roughness: 0.4,
-      metalness: 0.0
+      side: THREE.DoubleSide,
+      toneMapped: false
     });
     countdownMat.onBeforeCompile = (shader) => {
       shader.vertexShader = `
@@ -396,17 +390,19 @@ export class TrafficSignalRenderer {
         '#include <uv_vertex>',
         `
         #include <uv_vertex>
+        #ifdef USE_MAP
         float sec = clamp(aCountdownData.x, 0.0, 99.0);
         float tens = floor(sec / 10.0);
         float ones = mod(floor(sec), 10.0);
         float digit = aDigitPlace < 0.5 ? tens : ones;
 
         // Texture Atlas: 10 個數字均分 (寬度 0.1)
-        vUv.x = (vUv.x + digit) / 10.0;
+        vMapUv.x = (vMapUv.x + digit) / 10.0;
+        #endif
 
-        vec3 c = vec3(0.0, 1.0, 0.4);
+        vec3 c = vec3(0.0, 1.0, 0.42);
         if (aCountdownData.y > 1.5) c = vec3(1.0, 0.15, 0.15);
-        else if (aCountdownData.y > 0.5) c = vec3(1.0, 0.8, 0.0);
+        else if (aCountdownData.y > 0.5) c = vec3(1.0, 0.80, 0.0);
         vDigitColor = c;
         `
       );
@@ -422,14 +418,6 @@ export class TrafficSignalRenderer {
         diffuseColor.rgb *= vDigitColor;
         `
       );
-
-      shader.fragmentShader = shader.fragmentShader.replace(
-        '#include <emissivemap_fragment>',
-        `
-        #include <emissivemap_fragment>
-        totalEmissiveRadiance = diffuseColor.rgb * 2.2;
-        `
-      );
     };
 
     this.countdownMesh = new THREE.InstancedMesh(countdownGeom, countdownMat, this.maxPoles);
@@ -441,17 +429,15 @@ export class TrafficSignalRenderer {
     markingGeom.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 0, 0), 100000);
 
     const scooterTex = createScooterBoxTexture();
-    const markingMat = new THREE.MeshStandardMaterial({
+    const markingMat = new THREE.MeshBasicMaterial({
       map: scooterTex,
-      roughness: 0.75,
-      metalness: 0.05,
       transparent: true,
-      depthWrite: false
+      depthWrite: false,
+      side: THREE.DoubleSide
     });
 
     this.roadMarkingMesh = new THREE.InstancedMesh(markingGeom, markingMat, this.maxMarkings);
     this.roadMarkingMesh.name = 'SignalRoadMarkingMesh';
-    this.roadMarkingMesh.receiveShadow = true;
     this.roadMarkingMesh.frustumCulled = false;
 
     // 預設全數隱藏於地下
@@ -482,112 +468,196 @@ export class TrafficSignalRenderer {
   }
 
   /**
-   * 建立燈桿與橫臂幾何體 (合併幾何體)
+   * 建立燈桿與橫臂幾何體 (合併幾何體，含底座黃黑警示條紋頂點色)
    */
   private createPoleGeometry(): THREE.BufferGeometry {
     const vis = CONFIG.TRAFFIC_SIGNALS.VISUAL;
+    const postHeight = vis.POLE_HEIGHT; // 7.2m
+    const postRadius = vis.POLE_RADIUS; // 0.16m
+    const armLength = vis.ARM_LENGTH;   // 5.8m
+    const armHeight = vis.ARM_HEIGHT;   // 6.0m
 
-    // 立柱 (高 6.8m)
-    const postGeom = new THREE.CylinderGeometry(vis.POLE_RADIUS * 0.9, vis.POLE_RADIUS * 1.2, vis.POLE_HEIGHT, 8);
-    postGeom.translate(0, vis.POLE_HEIGHT * 0.5, 0);
+    // 1. 立柱 (高 7.2m, 多細分高度段以支援頂點著色黃黑警示條紋)
+    const postGeom = new THREE.CylinderGeometry(postRadius * 0.9, postRadius * 1.25, postHeight, 10, 24);
+    postGeom.translate(0, postHeight * 0.5, 0);
 
-    // 橫臂 (長 5.5m)
-    const armGeom = new THREE.CylinderGeometry(vis.POLE_RADIUS * 0.6, vis.POLE_RADIUS * 0.8, vis.ARM_LENGTH, 8);
-    armGeom.rotateX(Math.PI * 0.5);
-    armGeom.translate(0, vis.ARM_HEIGHT, vis.ARM_LENGTH * 0.5);
+    // 2. 懸臂橫桿 (長 5.8m, 沿車道橫跨方向 local +X 延伸)
+    const armGeom = new THREE.CylinderGeometry(postRadius * 0.55, postRadius * 0.85, armLength, 8);
+    armGeom.rotateZ(-Math.PI * 0.5);
+    armGeom.translate(armLength * 0.5, armHeight, 0);
 
-    // 斜向加固拉桿
-    const strutGeom = new THREE.CylinderGeometry(0.035, 0.035, 2.6, 6);
-    strutGeom.rotateX(Math.PI * 0.35);
-    strutGeom.translate(0, vis.ARM_HEIGHT + 0.35, 1.2);
+    // 3. 斜向加固拉桿 (從立柱 6.9m 連至橫臂 2.2m)
+    const strutLen = Math.hypot(2.2, 0.9);
+    const strutGeom = new THREE.CylinderGeometry(0.035, 0.035, strutLen, 6);
+    const strutAngle = Math.atan2(2.2, -0.9);
+    strutGeom.rotateZ(-strutAngle);
+    strutGeom.translate(1.1, armHeight + 0.45, 0);
 
-    return this.mergeGeometries([postGeom, armGeom, strutGeom]);
+    // 4. 底座法蘭盤
+    const baseGeom = new THREE.CylinderGeometry(postRadius * 1.6, postRadius * 1.7, 0.10, 10);
+    baseGeom.translate(0, 0.05, 0);
+
+    const merged = this.mergeGeometries([postGeom, armGeom, strutGeom, baseGeom]);
+
+    // 頂點色彩填入：底座 1.8m 以下為台灣經典黃黑相間警示條紋，其餘為深灰藍防蝕漆
+    const pos = merged.attributes.position.array as Float32Array;
+    const colors = new Float32Array(pos.length);
+
+    for (let i = 0; i < pos.length; i += 3) {
+      const y = pos[i + 1];
+      const x = pos[i];
+      if (y < 1.85 && Math.abs(x) < 0.35) {
+        // 每 0.28m 一道條紋
+        const stripe = Math.floor(y / 0.28);
+        if (stripe % 2 === 0) {
+          // 警示亮黃
+          colors[i] = 0.98;
+          colors[i + 1] = 0.80;
+          colors[i + 2] = 0.05;
+        } else {
+          // 警示黑灰
+          colors[i] = 0.12;
+          colors[i + 1] = 0.13;
+          colors[i + 2] = 0.16;
+        }
+      } else {
+        // 深灰藍底漆
+        colors[i] = 0.16;
+        colors[i + 1] = 0.20;
+        colors[i + 2] = 0.25;
+      }
+    }
+
+    merged.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+    return merged;
   }
 
   /**
-   * 建立號誌箱體與遮光罩幾何體 (合併幾何體)
+   * 建立號誌箱體與遮光罩幾何體 (面向 -Z 車流來向)
    */
   private createHousingGeometry(): THREE.BufferGeometry {
     const geoms: THREE.BufferGeometry[] = [];
+    const headW = 0.95;
+    const headH = 0.38;
+    const headD = 0.22;
 
-    // 橫臂主車輛燈箱 1 (懸臂中段 z = 3.2m, 高 5.8m)
-    const h1 = new THREE.BoxGeometry(1.05, 0.36, 0.22);
-    h1.translate(0, 5.8, 3.2);
-    geoms.push(h1);
+    const addHeadBox = (cx: number, cy: number, cz: number) => {
+      const box = new THREE.BoxGeometry(headW, headH, headD);
+      box.translate(cx, cy, cz);
+      geoms.push(box);
 
-    // 橫臂前端車輛燈箱 2 (懸臂末端 z = 4.8m, 高 5.8m)
-    const h2 = new THREE.BoxGeometry(1.05, 0.36, 0.22);
-    h2.translate(0, 5.8, 4.8);
-    geoms.push(h2);
+      // 遮光罩 (3 具朝向 -Z 的遮陽罩頂蓋)
+      for (const dx of [-0.30, 0.0, 0.30]) {
+        const visor = new THREE.BoxGeometry(0.30, 0.04, 0.16);
+        visor.translate(cx + dx, cy + headH * 0.48, cz - headD * 0.5 - 0.07);
+        geoms.push(visor);
+      }
+    };
 
-    // 立柱副燈箱 (立柱側 z = 0.35m, 高 3.6m)
-    const hSub = new THREE.BoxGeometry(1.05, 0.36, 0.22);
-    hSub.translate(0, 3.6, 0.35);
-    geoms.push(hSub);
+    // 1. 懸臂外側主車輛燈箱 1 (懸臂 x = 3.6m, 高 6.0m)
+    addHeadBox(3.6, 6.0, 0.0);
 
-    // 行人號誌箱 (立柱 z = 0.25m, 高 2.5m)
-    const hPed = new THREE.BoxGeometry(0.32, 0.62, 0.20);
-    hPed.translate(0, 2.5, 0.25);
-    geoms.push(hPed);
+    // 2. 懸臂內側主車輛燈箱 2 (懸臂 x = 5.2m, 高 6.0m)
+    addHeadBox(5.2, 6.0, 0.0);
 
-    // 倒數計時箱 (行人箱旁 x = 0.34m, 高 2.5m)
-    const hCount = new THREE.BoxGeometry(0.32, 0.32, 0.18);
-    hCount.translate(0.34, 2.5, 0.25);
-    geoms.push(hCount);
+    // 3. 立柱副燈箱 (立柱側 x = 0.25m, 高 3.8m)
+    addHeadBox(0.25, 3.8, 0.0);
+
+    // 4. 行人號誌箱 (立柱面向 -Z, 高 2.8m)
+    const pedBox = new THREE.BoxGeometry(0.40, 0.76, 0.22);
+    pedBox.translate(0.0, 2.8, -0.20);
+    geoms.push(pedBox);
+
+    // 行人遮光罩
+    const pVisor1 = new THREE.BoxGeometry(0.38, 0.04, 0.15);
+    pVisor1.translate(0.0, 2.8 + 0.36, -0.20 - 0.11 - 0.06);
+    geoms.push(pVisor1);
+    const pVisor2 = new THREE.BoxGeometry(0.38, 0.04, 0.15);
+    pVisor2.translate(0.0, 2.8 - 0.02, -0.20 - 0.11 - 0.06);
+    geoms.push(pVisor2);
+
+    // 5. 倒數計時箱 (立柱面向 -Z, 行人箱旁 x = 0.44m, 高 2.8m)
+    const countBox = new THREE.BoxGeometry(0.40, 0.40, 0.20);
+    countBox.translate(0.44, 2.8, -0.20);
+    geoms.push(countBox);
+
+    const cVisor = new THREE.BoxGeometry(0.38, 0.04, 0.15);
+    cVisor.translate(0.44, 2.8 + 0.19, -0.20 - 0.10 - 0.06);
+    geoms.push(cVisor);
 
     return this.mergeGeometries(geoms);
   }
 
   /**
-   * 建立車輛三色燈盤幾何體 (每桿包含 9 個圓盤透鏡)
+   * 建立車輛三色燈盤與發光光暈 (面向 -Z)
    */
   private createVehicleLightGeometry(): THREE.BufferGeometry {
     const posList: number[] = [];
     const normList: number[] = [];
     const typeList: number[] = []; // 0=Green, 1=Yellow, 2=Red
+    const haloList: number[] = []; // 0=實體燈面, 1=擴散光暈
 
     const addLightDisk = (cx: number, cy: number, cz: number, lightType: number) => {
-      // 8 邊形圓盤
-      const r = 0.11;
-      const segs = 8;
+      // 1. 實心圓盤鏡片 (直徑 0.28m, 半徑 0.14m)
+      const r = 0.14;
+      const segs = 12;
       for (let i = 0; i < segs; i++) {
         const a1 = (i / segs) * Math.PI * 2;
         const a2 = ((i + 1) / segs) * Math.PI * 2;
 
+        // CCW 繞行當從 -Z 朝向 +Z 觀看時
         posList.push(cx, cy, cz);
         posList.push(cx + Math.cos(a1) * r, cy + Math.sin(a1) * r, cz);
         posList.push(cx + Math.cos(a2) * r, cy + Math.sin(a2) * r, cz);
 
-        normList.push(0, 0, -1, 0, 0, -1, 0, 0, -1);
+        normList.push(0, 0, -1,  0, 0, -1,  0, 0, -1);
         typeList.push(lightType, lightType, lightType);
+        haloList.push(0.0, 0.0, 0.0);
+      }
+
+      // 2. 擴散發光光暈 Halo 盤 (半徑 0.32m, 略微前浮 0.005m)
+      const rHalo = 0.32;
+      const czHalo = cz - 0.005;
+      for (let i = 0; i < segs; i++) {
+        const a1 = (i / segs) * Math.PI * 2;
+        const a2 = ((i + 1) / segs) * Math.PI * 2;
+
+        posList.push(cx, cy, czHalo);
+        posList.push(cx + Math.cos(a1) * rHalo, cy + Math.sin(a1) * rHalo, czHalo);
+        posList.push(cx + Math.cos(a2) * rHalo, cy + Math.sin(a2) * rHalo, czHalo);
+
+        normList.push(0, 0, -1,  0, 0, -1,  0, 0, -1);
+        typeList.push(lightType, lightType, lightType);
+        haloList.push(1.0, 1.0, 1.0);
       }
     };
 
-    // 橫式號誌標準：由左至右為綠、黃、紅 (向著車流來向 -Z 看去：左為 +X, 中為 0, 右為 -X)
-    // 主燈 1 (z = 3.08)
-    addLightDisk(0.32, 5.8, 3.08, 0);  // 綠燈
-    addLightDisk(0.00, 5.8, 3.08, 1);  // 黃燈
-    addLightDisk(-0.32, 5.8, 3.08, 2); // 紅燈
+    // 台灣橫式號誌標準：面對來車看去（由左至右為綠、黃、紅）
+    // 朝著 -Z 望去時：左側為 +X, 中間為 0, 右側為 -X
+    const addTripleLight = (headX: number, headY: number, headZ: number) => {
+      const zLens = headZ - 0.115;
+      addLightDisk(headX + 0.30, headY, zLens, 0); // 綠燈 (左側)
+      addLightDisk(headX + 0.00, headY, zLens, 1); // 黃燈 (中間)
+      addLightDisk(headX - 0.30, headY, zLens, 2); // 紅燈 (右側)
+    };
 
-    // 主燈 2 (z = 4.68)
-    addLightDisk(0.32, 5.8, 4.68, 0);
-    addLightDisk(0.00, 5.8, 4.68, 1);
-    addLightDisk(-0.32, 5.8, 4.68, 2);
-
-    // 立柱副燈 (z = 0.23)
-    addLightDisk(0.32, 3.6, 0.23, 0);
-    addLightDisk(0.00, 3.6, 0.23, 1);
-    addLightDisk(-0.32, 3.6, 0.23, 2);
+    // 懸臂外側燈
+    addTripleLight(3.6, 6.0, 0.0);
+    // 懸臂內側燈
+    addTripleLight(5.2, 6.0, 0.0);
+    // 立柱副燈
+    addTripleLight(0.25, 3.8, 0.0);
 
     const geom = new THREE.BufferGeometry();
     geom.setAttribute('position', new THREE.Float32BufferAttribute(posList, 3));
     geom.setAttribute('normal', new THREE.Float32BufferAttribute(normList, 3));
     geom.setAttribute('aLightType', new THREE.Float32BufferAttribute(typeList, 1));
+    geom.setAttribute('aIsHalo', new THREE.Float32BufferAttribute(haloList, 1));
     return geom;
   }
 
   /**
-   * 建立行人號誌幾何體 (上下兩格 Quad)
+   * 建立行人號誌幾何體 (上下兩格 Quad, 面向 -Z)
    */
   private createPedSignalGeometry(): THREE.BufferGeometry {
     const posList: number[] = [];
@@ -599,14 +669,17 @@ export class TrafficSignalRenderer {
       const hw = w * 0.5;
       const hh = h * 0.5;
 
+      // CCW 繞行 (從 -Z 看向 +Z: 左為 +X, 右為 -X, 上為 +Y, 下為 -Y)
+      // 三角形 1: (+hw, +hh) -> (-hw, +hh) -> (-hw, -hh)
+      // 三角形 2: (+hw, +hh) -> (-hw, -hh) -> (+hw, -hh)
       posList.push(
+        cx + hw, cy + hh, cz,
         cx - hw, cy + hh, cz,
         cx - hw, cy - hh, cz,
-        cx + hw, cy - hh, cz,
 
-        cx - hw, cy + hh, cz,
-        cx + hw, cy - hh, cz,
-        cx + hw, cy + hh, cz
+        cx + hw, cy + hh, cz,
+        cx - hw, cy - hh, cz,
+        cx + hw, cy - hh, cz
       );
 
       normList.push(
@@ -615,17 +688,18 @@ export class TrafficSignalRenderer {
       );
 
       uvList.push(
-        0, vMax,  0, vMin,  1, vMin,
-        0, vMax,  1, vMin,  1, vMax
+        1, vMax,  0, vMax,  0, vMin,
+        1, vMax,  0, vMin,  1, vMin
       );
 
       slotList.push(slot, slot, slot, slot, slot, slot);
     };
 
-    // 上格：紅人 (UV v: 0.5 ~ 1.0)
-    addQuad(0, 2.64, 0.14, 0.26, 0.26, 0.5, 1.0, 0);
-    // 下格：小綠人 (UV v: 0.0 ~ 0.5)
-    addQuad(0, 2.36, 0.14, 0.26, 0.26, 0.0, 0.5, 1);
+    const czPed = -0.315;
+    // 上格：紅人 (UV v: 0.5 ~ 1.0, 尺寸 0.36m x 0.36m)
+    addQuad(0.0, 2.98, czPed, 0.36, 0.36, 0.5, 1.0, 0);
+    // 下格：小綠人 (UV v: 0.0 ~ 0.5, 尺寸 0.36m x 0.36m)
+    addQuad(0.0, 2.62, czPed, 0.36, 0.36, 0.0, 0.5, 1);
 
     const geom = new THREE.BufferGeometry();
     geom.setAttribute('position', new THREE.Float32BufferAttribute(posList, 3));
@@ -636,7 +710,7 @@ export class TrafficSignalRenderer {
   }
 
   /**
-   * 建立倒數計時器幾何體 (十位與個位雙 Quad)
+   * 建立倒數計時器幾何體 (十位與個位雙 Quad, 面向 -Z)
    */
   private createCountdownGeometry(): THREE.BufferGeometry {
     const posList: number[] = [];
@@ -649,13 +723,13 @@ export class TrafficSignalRenderer {
       const hh = h * 0.5;
 
       posList.push(
+        cx + hw, cy + hh, cz,
         cx - hw, cy + hh, cz,
         cx - hw, cy - hh, cz,
-        cx + hw, cy - hh, cz,
 
-        cx - hw, cy + hh, cz,
-        cx + hw, cy - hh, cz,
-        cx + hw, cy + hh, cz
+        cx + hw, cy + hh, cz,
+        cx - hw, cy - hh, cz,
+        cx + hw, cy - hh, cz
       );
 
       normList.push(
@@ -663,19 +737,19 @@ export class TrafficSignalRenderer {
         0, 0, -1,  0, 0, -1,  0, 0, -1
       );
 
-      // 基準 UV (0~1)，後續頂點著色器橫向縮放至 1/10
+      // 基準 UV (0~1)，著色器橫向映射
       uvList.push(
-        0, 1,  0, 0,  1, 0,
-        0, 1,  1, 0,  1, 1
+        1, 1,  0, 1,  0, 0,
+        1, 1,  0, 0,  1, 0
       );
 
       placeList.push(place, place, place, place, place, place);
     };
 
-    // 十位數 (左)
-    addQuad(0.27, 2.50, 0.15, 0.12, 0.24, 0);
-    // 個位數 (右)
-    addQuad(0.41, 2.50, 0.15, 0.12, 0.24, 1);
+    const czCount = -0.315;
+    // 面向 -Z 看去時：左側為十位數 (x = 0.53m)，右側為個位數 (x = 0.35m)
+    addQuad(0.53, 2.80, czCount, 0.16, 0.32, 0);
+    addQuad(0.35, 2.80, czCount, 0.16, 0.32, 1);
 
     const geom = new THREE.BufferGeometry();
     geom.setAttribute('position', new THREE.Float32BufferAttribute(posList, 3));
@@ -689,7 +763,7 @@ export class TrafficSignalRenderer {
    * 建立路面機車待轉區幾何體 (水平貼地面片)
    */
   private createRoadMarkingGeometry(): THREE.BufferGeometry {
-    const geom = new THREE.PlaneGeometry(2.4, 2.4);
+    const geom = new THREE.PlaneGeometry(2.6, 2.6);
     geom.rotateX(-Math.PI * 0.5);
     return geom;
   }
@@ -763,7 +837,7 @@ export class TrafficSignalRenderer {
   }
 
   /**
-   * 逐幀更新號誌渲染管線 (僅更新 200m 內，耗時 < 0.3ms)
+   * 逐幀更新號誌渲染管線 (更新 300m 內，耗時 < 0.3ms)
    */
   public update(system: TrafficSignalSystem, playerPos: Point2D, gameTime: number): void {
     if (!CONFIG.TRAFFIC_SIGNALS.ENABLED || this.poleList.length === 0) {
@@ -774,7 +848,7 @@ export class TrafficSignalRenderer {
 
     this.globalUniforms.uTime.value = gameTime;
 
-    const updRadius = CONFIG.TRAFFIC_SIGNALS.UPDATE_RADIUS || 200.0;
+    const updRadius = CONFIG.TRAFFIC_SIGNALS.UPDATE_RADIUS || 300.0;
     const vStateArr = this.vehicleStateAttr.array as Float32Array;
     const pStateArr = this.pedStateAttr.array as Float32Array;
     const countArr = this.countdownAttr.array as Float32Array;

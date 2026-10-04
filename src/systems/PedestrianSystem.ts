@@ -17,11 +17,13 @@ import {
   PedestrianNetworkData,
   PedestrianNode,
   PedestrianState,
-  PedestrianSystemStats
+  PedestrianSystemStats,
+  PedestrianSamplingReport
 } from '../geo/PedestrianTypes.ts';
 import { CONFIG } from '../config.ts';
 import { TrafficSignalSystem } from './traffic-signals/TrafficSignalSystem.ts';
 import { PedestrianSignalInfo } from './traffic-signals/SignalController.ts';
+import { DriverAppearance } from '../geo/TrafficTypes.ts';
 
 export interface PedestrianAgent {
   id: number;
@@ -62,6 +64,36 @@ export interface PedestrianAgent {
 
   // 暫留店家
   insideBuildingTimer: number;
+
+  // 結伴同行組
+  companionGroupId?: number;
+  companionLeaderId?: number;
+  companionOffsetSide?: number;
+
+  // 遠程目標與起步延遲
+  longTermGoalNodeId?: number;
+  startDelayTimer?: number;
+
+  // 等紅燈路緣站位
+  curbWaitingSlotIndex?: number;
+  curbWaitingOffsetX?: number;
+  curbWaitingOffsetZ?: number;
+
+  // 人行道兩側分流行走
+  lateralOffset?: number;
+
+  // 原地轉身狀態 (不倒退走)
+  isTurningAround?: boolean;
+  turnAroundTimer?: number;
+  wrongFacingTimer?: number;
+
+  // 斑馬線過街中心線限制
+  currentCrossingGroupId?: number;
+
+  // 違規行為
+  isViolator?: boolean;
+  violationType?: 'jaywalk_red_light' | 'cross_no_zebra' | 'walk_on_road_edge' | 'none';
+  violationTimer?: number;
 }
 
 export class PedestrianSystem {
@@ -84,6 +116,43 @@ export class PedestrianSystem {
 
   // 事件監聽回呼清單
   private eventListeners: Map<string, ((origin: Point2D, radius: number) => void)[]> = new Map();
+
+  // 結伴同行組計數器
+  private nextCompanionGroupId = 1;
+
+  // 違規、倒退走與過街統計
+  private backwardsWalkCount = 0;
+  private crossingsTotal = 0;
+  private crossingsOnZebra = 0;
+  private crossingsViolations = 0;
+  private pedestrianViolationsStats = {
+    jaywalkRed: 0,
+    crossNoZebra: 0,
+    walkRoadEdge: 0,
+    total: 0
+  };
+
+  // 聚集度計算計時 (每秒計算一次)
+  private crowdCheckTimer = 0;
+  private crowdedCount = 0;
+  private crowdedRatePercent = 0;
+
+  // 60 秒行為抽樣
+  private samplingActive = false;
+  private samplingTimer = 0;
+  private samplingInitialBackwards = 0;
+  private samplingInitialCrossTotal = 0;
+  private samplingInitialCrossZebra = 0;
+  private samplingInitialCrossViolations = 0;
+  private samplingInitialViolations = {
+    jaywalkRed: 0,
+    crossNoZebra: 0,
+    walkRoadEdge: 0,
+    total: 0
+  };
+  private samplingCrowdRateSum = 0;
+  private samplingCrowdRateCount = 0;
+  private samplingReport: PedestrianSamplingReport | null = null;
 
   constructor() {
     this.initPool();
@@ -120,7 +189,22 @@ export class PedestrianSystem {
         heightScale: 1.0,
         widthScale: 1.0,
         accessoryType: 'none',
-        insideBuildingTimer: 0
+        insideBuildingTimer: 0,
+        companionGroupId: undefined,
+        companionLeaderId: undefined,
+        companionOffsetSide: undefined,
+        longTermGoalNodeId: undefined,
+        startDelayTimer: 0,
+        curbWaitingSlotIndex: undefined,
+        curbWaitingOffsetX: 0,
+        curbWaitingOffsetZ: 0,
+        isTurningAround: false,
+        turnAroundTimer: 0,
+        wrongFacingTimer: 0,
+        currentCrossingGroupId: undefined,
+        isViolator: false,
+        violationType: 'none',
+        violationTimer: 0
       });
     }
   }
@@ -223,6 +307,81 @@ export class PedestrianSystem {
       this.updateAgentPhysicsAndAnimation(agent, fixedDelta, playerPos, buildingColliders);
     }
 
+    // 6. 每秒計算一次聚集比例 (統計 1.2m 內有 2 位以上非同伴人數 / 總人數，目標 < 3%)
+    this.crowdCheckTimer += fixedDelta;
+    if (this.crowdCheckTimer >= 1.0) {
+      this.crowdCheckTimer = 0;
+      let count = 0;
+      const total = activeList.length;
+      for (let i = 0; i < total; i++) {
+        const a1 = activeList[i];
+        if (a1.state === PedestrianState.WAITING_CROSSWALK) continue;
+        let nearCount = 0;
+        for (let j = 0; j < total; j++) {
+          if (i === j) continue;
+          const a2 = activeList[j];
+          if (a2.state === PedestrianState.WAITING_CROSSWALK) continue;
+          if (a1.companionGroupId && a2.companionGroupId && a1.companionGroupId === a2.companionGroupId) continue;
+          const dSq = (a1.x - a2.x) * (a1.x - a2.x) + (a1.z - a2.z) * (a1.z - a2.z);
+          if (dSq < 1.44) {
+            nearCount++;
+            if (nearCount >= 2) break;
+          }
+        }
+        if (nearCount >= 2) {
+          count++;
+        }
+      }
+      this.crowdedCount = count;
+      this.crowdedRatePercent = total > 0 ? (count / total) * 100 : 0;
+    }
+
+    // 7. 60 秒行為抽樣更新
+    if (this.samplingActive) {
+      this.samplingTimer -= fixedDelta;
+      this.samplingCrowdRateSum += this.crowdedRatePercent;
+      this.samplingCrowdRateCount++;
+
+      if (this.samplingTimer <= 0) {
+        this.samplingActive = false;
+        const deltaBackwards = this.backwardsWalkCount - this.samplingInitialBackwards;
+        const deltaCrossTotal = this.crossingsTotal - this.samplingInitialCrossTotal;
+        const deltaCrossZebra = this.crossingsOnZebra - this.samplingInitialCrossZebra;
+        const deltaCrossViolations = this.crossingsViolations - this.samplingInitialCrossViolations;
+        const deltaViolations = {
+          jaywalkRed: this.pedestrianViolationsStats.jaywalkRed - this.samplingInitialViolations.jaywalkRed,
+          crossNoZebra: this.pedestrianViolationsStats.crossNoZebra - this.samplingInitialViolations.crossNoZebra,
+          walkRoadEdge: this.pedestrianViolationsStats.walkRoadEdge - this.samplingInitialViolations.walkRoadEdge,
+          total: this.pedestrianViolationsStats.total - this.samplingInitialViolations.total
+        };
+
+        const totalActive = Math.max(1, activeList.length);
+        const avgCrowdRate = this.samplingCrowdRateCount > 0
+          ? this.samplingCrowdRateSum / this.samplingCrowdRateCount
+          : this.crowdedRatePercent;
+        const zebraCompliance = deltaCrossTotal > 0
+          ? ((deltaCrossZebra / deltaCrossTotal) * 100)
+          : 100.0;
+        const vRate = (deltaViolations.total / totalActive) * 100;
+
+        this.samplingReport = {
+          samplingDurationSec: 60.0,
+          totalPedestriansSampled: totalActive,
+          backwardsCount: deltaBackwards,
+          crowdedRatePercent: Math.round(avgCrowdRate * 10) / 10,
+          crowdedEventsCount: Math.round((avgCrowdRate * totalActive) / 100),
+          zebraComplianceRatePercent: Math.round(zebraCompliance * 10) / 10,
+          crossingsTotal: deltaCrossTotal,
+          crossingsOnZebra: deltaCrossZebra,
+          crossingsViolations: deltaCrossViolations,
+          violationsCount: deltaViolations,
+          violationRatePercent: Math.round(vRate * 10) / 10,
+          isCompliant: deltaBackwards === 0 && avgCrowdRate <= 3.0 && deltaViolations.crossNoZebra === 0
+        };
+        console.log('[PedestrianSystem] 60 秒行人行為抽樣完成:', this.samplingReport);
+      }
+    }
+
     this.lastAiTimeMs = performance.now() - tStart;
   }
 
@@ -299,8 +458,8 @@ export class PedestrianSystem {
       // 尋找最近之候選節點 (18m 範圍內，防止吸附到太遠的節點)
       const candNode = this.findNearestNodeWeighted(sampleX, sampleZ, 18.0);
       if (candNode !== null && candNode.edges.length > 0) {
-        // 避免在同一個節點 2.5m 內密集堆疊生成
-        if (!this.isPositionCrowded(candNode.x, candNode.z, 2.5)) {
+        // 依據 Poisson-disk 6m 最小間距與 10x10m 密度上限判斷是否可生成
+        if (!this.isPositionCrowded(candNode.x, candNode.z, candNode)) {
           this.spawnAgentAtNode(candNode, isRaining);
         }
       }
@@ -308,13 +467,35 @@ export class PedestrianSystem {
   }
 
   /**
-   * 檢查某個座標點附近是否已有有效行人
+   * 檢查某個座標點附近是否已有有效行人 (Poisson-disk 6m 最小間距 + 10x10m 密度上限 4人/熱點 8人)
    */
-  private isPositionCrowded(x: number, z: number, minDist: number): boolean {
+  private isPositionCrowded(x: number, z: number, node: PedestrianNode): boolean {
+    const minSpacing = CONFIG.NPC_BEHAVIOR.PEDESTRIAN.MIN_SPAWN_SPACING; // 6.0m
+    const isHotspot = (node.densityWeight || 1.0) >= 1.8;
+    const cellLimit = isHotspot
+      ? CONFIG.NPC_BEHAVIOR.PEDESTRIAN.GRID_DENSITY_LIMIT_HOTSPOT // 8 人
+      : CONFIG.NPC_BEHAVIOR.PEDESTRIAN.GRID_DENSITY_LIMIT_NORMAL; // 4 人
+
+    const gx = Math.floor(x / 10.0);
+    const gz = Math.floor(z / 10.0);
+    let cellCount = 0;
+
     for (let i = 0; i < this.agents.length; i++) {
       const a = this.agents[i];
-      if (a.active && Math.hypot(a.x - x, a.z - z) < minDist) {
+      if (!a.active) continue;
+
+      const dist = Math.hypot(a.x - x, a.z - z);
+      if (dist < minSpacing) {
         return true;
+      }
+
+      const agx = Math.floor(a.x / 10.0);
+      const agz = Math.floor(a.z / 10.0);
+      if (agx === gx && agz === gz) {
+        cellCount++;
+        if (cellCount >= cellLimit) {
+          return true;
+        }
       }
     }
     return false;
@@ -337,10 +518,19 @@ export class PedestrianSystem {
     const progress = Math.random() * 0.95;
     const dx = targetNode.x - node.x;
     const dz = targetNode.z - node.z;
+    const segLen = Math.hypot(dx, dz) || 1.0;
+    const normX = -dz / segLen;
+    const normZ = dx / segLen;
+    const latOffset = (Math.random() > 0.5 ? 1 : -1) * (0.35 + Math.random() * 0.35);
+    const spawnX = node.x + dx * progress + normX * latOffset;
+    const spawnZ = node.z + dz * progress + normZ * latOffset;
+
+    if (this.isPositionCrowded(spawnX, spawnZ, node)) return;
 
     inactiveAgent.active = true;
-    inactiveAgent.x = node.x + dx * progress;
-    inactiveAgent.z = node.z + dz * progress;
+    inactiveAgent.x = spawnX;
+    inactiveAgent.z = spawnZ;
+    inactiveAgent.lateralOffset = latOffset;
     const currY = (node.isArcade || !node.isCrosswalk) ? CONFIG.ROADS.ELEVATION.SIDEWALK : (CONFIG.ROADS.ELEVATION.ROAD + 0.01);
     const targetY = (targetNode.isArcade || !targetNode.isCrosswalk) ? CONFIG.ROADS.ELEVATION.SIDEWALK : (CONFIG.ROADS.ELEVATION.ROAD + 0.01);
     inactiveAgent.y = currY + (targetY - currY) * progress;
@@ -352,11 +542,82 @@ export class PedestrianSystem {
     inactiveAgent.edgeLength = targetEdge.distance;
     inactiveAgent.rotationY = Math.atan2(dx, dz);
 
-    const baseSpeed = speeds.MIN_SPEED_MPS + Math.random() * (speeds.MAX_SPEED_MPS - speeds.MIN_SPEED_MPS);
+    // 速度隨機差異 ±20%
+    const speedVariation = 1.0 + (Math.random() * 2 - 1) * CONFIG.NPC_BEHAVIOR.PEDESTRIAN.SPEED_VARIATION;
+    const baseSpeed = (speeds.MIN_SPEED_MPS + Math.random() * (speeds.MAX_SPEED_MPS - speeds.MIN_SPEED_MPS)) * speedVariation;
     inactiveAgent.targetSpeed = baseSpeed;
     inactiveAgent.speed = baseSpeed;
-    inactiveAgent.state = PedestrianState.WALKING;
-    inactiveAgent.stateTimer = 0;
+
+    // 起步隨機延遲 (0~3 秒，避免同步啟動)
+    inactiveAgent.startDelayTimer = Math.random() * CONFIG.NPC_BEHAVIOR.PEDESTRIAN.START_DELAY_MAX;
+
+    // 隨機遠程目標節點 (80~200m，避免所有人朝同一方向走)
+    const distantNodes = this.network!.nodes.filter((n) => {
+      const d = Math.hypot(n.x - node.x, n.z - node.z);
+      return d >= 80.0 && d <= 200.0;
+    });
+    if (distantNodes.length > 0) {
+      inactiveAgent.longTermGoalNodeId = distantNodes[Math.floor(Math.random() * distantNodes.length)].id;
+    } else {
+      inactiveAgent.longTermGoalNodeId = undefined;
+    }
+
+    // 重設轉向與站位狀態
+    inactiveAgent.isTurningAround = false;
+    inactiveAgent.turnAroundTimer = 0;
+    inactiveAgent.wrongFacingTimer = 0;
+    inactiveAgent.curbWaitingSlotIndex = undefined;
+    inactiveAgent.curbWaitingOffsetX = 0;
+    inactiveAgent.curbWaitingOffsetZ = 0;
+    inactiveAgent.currentCrossingGroupId = undefined;
+
+    // 違規行為初始化 (約 6% 機率，安全避讓不相撞)
+    inactiveAgent.isViolator = false;
+    inactiveAgent.violationType = 'none';
+    inactiveAgent.violationTimer = 0;
+    if (CONFIG.NPC_BEHAVIOR.violationsEnabled && Math.random() < CONFIG.NPC_BEHAVIOR.VIOLATIONS.pedestrian.totalRate) {
+      inactiveAgent.isViolator = true;
+      const vRoll = Math.random();
+      if (vRoll < 0.50) {
+        inactiveAgent.violationType = 'jaywalk_red_light';
+      } else if (vRoll < 0.83) {
+        inactiveAgent.violationType = 'cross_no_zebra';
+      } else {
+        inactiveAgent.violationType = 'walk_on_road_edge';
+      }
+    }
+
+    // 結伴同行組初始化 (約 8% 機率)
+    inactiveAgent.companionGroupId = undefined;
+    inactiveAgent.companionLeaderId = undefined;
+    inactiveAgent.companionOffsetSide = undefined;
+
+    if (Math.random() < CONFIG.NPC_BEHAVIOR.PEDESTRIAN.COMPANION_GROUP_CHANCE) {
+      const companionGroupId = this.nextCompanionGroupId++;
+      inactiveAgent.companionGroupId = companionGroupId;
+      inactiveAgent.companionOffsetSide = 0;
+
+      // 生成同伴 (雙人組或三人組)
+      const groupSize = Math.random() < 0.8 ? 2 : 3;
+      for (let g = 1; g < groupSize; g++) {
+        const partner = this.agents.find((a) => !a.active);
+        if (partner) {
+          const sideOffset = (g === 1 ? 1 : -1) * (CONFIG.NPC_BEHAVIOR.PEDESTRIAN.COMPANION_SPACING_MIN + Math.random() * (CONFIG.NPC_BEHAVIOR.PEDESTRIAN.COMPANION_SPACING_MAX - CONFIG.NPC_BEHAVIOR.PEDESTRIAN.COMPANION_SPACING_MIN));
+          this.spawnCompanion(partner, inactiveAgent, companionGroupId, sideOffset, isRaining);
+        }
+      }
+    }
+
+    // 約 2% 行人進入路邊叫車狀態
+    if (!node.isCrosswalk && Math.random() < 0.02) {
+      inactiveAgent.state = PedestrianState.HAILING_TAXI;
+      inactiveAgent.stateTimer = 20.0 + Math.random() * 25.0;
+      inactiveAgent.targetSpeed = 0;
+      inactiveAgent.speed = 0;
+    } else {
+      inactiveAgent.state = PedestrianState.WALKING;
+      inactiveAgent.stateTimer = 0;
+    }
     inactiveAgent.insideBuildingTimer = 0;
 
     // 隨機外觀配置
@@ -393,6 +654,60 @@ export class PedestrianSystem {
     inactiveAgent.widthScale = 0.94 + Math.random() * 0.12;
     inactiveAgent.walkPhase = Math.random() * Math.PI * 2;
     inactiveAgent.idlePhase = Math.random() * Math.PI * 2;
+  }
+
+  /**
+   * 生成結伴同行夥伴 (保持 0.8~1.2m 並排同速同向)
+   */
+  private spawnCompanion(
+    partner: PedestrianAgent,
+    leader: PedestrianAgent,
+    companionGroupId: number,
+    sideOffset: number,
+    isRaining: boolean
+  ): void {
+    const colors = CONFIG.PEDESTRIAN.COLORS;
+    partner.active = true;
+    partner.companionGroupId = companionGroupId;
+    partner.companionLeaderId = leader.id;
+    partner.companionOffsetSide = sideOffset;
+
+    // 沿領頭人前進方向之側向偏移
+    const fwdX = Math.sin(leader.rotationY);
+    const fwdZ = Math.cos(leader.rotationY);
+    const rightX = fwdZ;
+    const rightZ = -fwdX;
+
+    partner.x = leader.x + rightX * sideOffset;
+    partner.y = leader.y;
+    partner.z = leader.z + rightZ * sideOffset;
+    partner.rotationY = leader.rotationY;
+    partner.currentNodeId = leader.currentNodeId;
+    partner.targetNodeId = leader.targetNodeId;
+    partner.prevNodeId = leader.prevNodeId;
+    partner.pathProgress = leader.pathProgress;
+    partner.edgeLength = leader.edgeLength;
+    partner.speed = leader.speed;
+    partner.targetSpeed = leader.targetSpeed;
+    partner.startDelayTimer = leader.startDelayTimer;
+    partner.state = leader.state;
+    partner.stateTimer = leader.stateTimer;
+    partner.insideBuildingTimer = 0;
+    partner.longTermGoalNodeId = leader.longTermGoalNodeId;
+    partner.isViolator = leader.isViolator;
+    partner.violationType = leader.violationType;
+    partner.violationTimer = 0;
+
+    partner.skinColorHex = colors.SKINS[Math.floor(Math.random() * colors.SKINS.length)];
+    partner.hairColorHex = colors.HAIRS[Math.floor(Math.random() * colors.HAIRS.length)];
+    partner.pantsColorHex = colors.PANTS[Math.floor(Math.random() * colors.PANTS.length)];
+    partner.shirtColorHex = colors.SHIRTS[Math.floor(Math.random() * colors.SHIRTS.length)];
+    partner.accessoryType = isRaining ? (Math.random() < 0.75 ? 'umbrella' : 'none') : 'none';
+    partner.gesture = partner.accessoryType === 'umbrella' ? 2 : 0;
+    partner.heightScale = 0.94 + Math.random() * 0.12;
+    partner.widthScale = 0.94 + Math.random() * 0.12;
+    partner.walkPhase = leader.walkPhase;
+    partner.idlePhase = leader.idlePhase;
   }
 
   /**
@@ -496,6 +811,17 @@ export class PedestrianSystem {
         }
         break;
       }
+
+      case PedestrianState.HAILING_TAXI: {
+        agent.targetSpeed = 0;
+        agent.gesture = 3; // 揮手叫車動作
+        agent.stateTimer -= dt;
+        if (agent.stateTimer <= 0) {
+          agent.state = PedestrianState.WALKING;
+          agent.gesture = 0;
+        }
+        break;
+      }
     }
   }
 
@@ -512,8 +838,12 @@ export class PedestrianSystem {
       return; // 處於室內/店家時跳過
     }
 
-    // 速度平滑過渡
-    agent.speed += (agent.targetSpeed - agent.speed) * Math.min(1.0, dt * 5.0);
+    // 起步隨機延遲 (0~3 秒，避免像連體嬰一樣同步啟動)
+    if (agent.startDelayTimer && agent.startDelayTimer > 0) {
+      agent.startDelayTimer -= dt;
+      agent.idlePhase += dt * 2.5;
+      return;
+    }
 
     const nodes = this.network!.nodes;
     const currNode = nodes[agent.currentNodeId];
@@ -524,7 +854,46 @@ export class PedestrianSystem {
       return;
     }
 
-    // 1. 空間避讓 (行人相互排斥力)
+    const segDx = targetNode.x - currNode.x;
+    const segDz = targetNode.z - currNode.z;
+    const targetAngle = Math.atan2(segDx, segDz);
+
+    // 原地轉身狀態處理 (夾角大或折返時，先原地轉身 0.3~0.6s 再走，絕不倒退走)
+    if (agent.isTurningAround) {
+      agent.turnAroundTimer = (agent.turnAroundTimer || 0) - dt;
+      agent.speed = 0;
+      agent.avoidVx = 0;
+      agent.avoidVz = 0;
+      let angleDiff = targetAngle - agent.rotationY;
+      while (angleDiff > Math.PI) angleDiff -= Math.PI * 2;
+      while (angleDiff < -Math.PI) angleDiff += Math.PI * 2;
+      const maxTurnStep = (CONFIG.NPC_BEHAVIOR.NO_WALK_BACKWARDS.MAX_TURN_RATE_DEG_PER_SEC * Math.PI / 180) * dt;
+      const turnStep = Math.sign(angleDiff) * Math.min(Math.abs(angleDiff), maxTurnStep);
+      agent.rotationY += turnStep;
+      agent.idlePhase += dt * 2.5;
+      if (Math.abs(angleDiff) < 0.15 && (agent.turnAroundTimer === undefined || agent.turnAroundTimer <= 0)) {
+        agent.isTurningAround = false;
+      }
+      return;
+    }
+
+    // 夾角超過門檻時速度降為 0 先原地轉身
+    let headingDiff = targetAngle - agent.rotationY;
+    while (headingDiff > Math.PI) headingDiff -= Math.PI * 2;
+    while (headingDiff < -Math.PI) headingDiff += Math.PI * 2;
+    if (Math.abs(headingDiff) > (CONFIG.NPC_BEHAVIOR.NO_WALK_BACKWARDS.REVERSE_ANGLE_THRESHOLD_DEG * Math.PI / 180)) {
+      agent.isTurningAround = true;
+      agent.turnAroundTimer = CONFIG.NPC_BEHAVIOR.NO_WALK_BACKWARDS.TURN_AROUND_TIME_MIN + Math.random() * (CONFIG.NPC_BEHAVIOR.NO_WALK_BACKWARDS.TURN_AROUND_TIME_MAX - CONFIG.NPC_BEHAVIOR.NO_WALK_BACKWARDS.TURN_AROUND_TIME_MIN);
+      agent.speed = 0;
+      agent.avoidVx = 0;
+      agent.avoidVz = 0;
+      return;
+    }
+
+    // 速度平滑過渡
+    agent.speed += (agent.targetSpeed - agent.speed) * Math.min(1.0, dt * 5.0);
+
+    // 1. 空間避讓 (0.7m 個人空間排斥力)
     this.calculateSeparation(agent, dt);
 
     // 2. 避讓玩家 (當距離小於門檻時向兩側側移讓路)
@@ -534,24 +903,50 @@ export class PedestrianSystem {
 
     if (distToPlayer < CONFIG.PEDESTRIAN.AVOID_PLAYER_RADIUS && distToPlayer > 0.1) {
       const avoidStrength = (CONFIG.PEDESTRIAN.AVOID_PLAYER_RADIUS - distToPlayer) * 3.5;
-      // 沿法線外推
       agent.avoidVx -= (toPlayerX / distToPlayer) * avoidStrength;
       agent.avoidVz -= (toPlayerZ / distToPlayer) * avoidStrength;
       agent.state = PedestrianState.EVADING;
       agent.stateTimer = 0.8;
     }
 
-    // 3. 沿路網前進
-    const segDx = targetNode.x - currNode.x;
-    const segDz = targetNode.z - currNode.z;
-    const segLen = agent.edgeLength || Math.hypot(segDx, segDz) || 1;
+    // 避讓速度不得向後推動行人 (防止避讓導致倒退走)
+    const fwdX = Math.sin(agent.rotationY);
+    const fwdZ = Math.cos(agent.rotationY);
+    const avoidDot = agent.avoidVx * fwdX + agent.avoidVz * fwdZ;
+    if (avoidDot < 0) {
+      agent.avoidVx -= avoidDot * fwdX;
+      agent.avoidVz -= avoidDot * fwdZ;
+    }
 
+    // 3. 沿路網前進
+    const segLen = agent.edgeLength || Math.hypot(segDx, segDz) || 1;
     const moveDist = agent.speed * dt;
     agent.pathProgress += moveDist / segLen;
 
-    // 線性插值計算位置與路面/人行道高程 + 疊加避讓位移
-    let nextX = currNode.x + segDx * Math.min(1.0, agent.pathProgress) + agent.avoidVx * dt;
-    let nextZ = currNode.z + segDz * Math.min(1.0, agent.pathProgress) + agent.avoidVz * dt;
+    const normX = -segDz / segLen;
+    const normZ = segDx / segLen;
+
+    // 沿當前朝向方向前進 + 避讓向量 (保證絕對不產生倒退分量)
+    const fwdStep = agent.speed * dt;
+    let nextX = agent.x + fwdX * fwdStep + agent.avoidVx * dt;
+    let nextZ = agent.z + fwdZ * fwdStep + agent.avoidVz * dt;
+
+    // 斑馬線中心線限制：橫向偏移 <= 0.8m，偏離 > 1.0m 自動拉回
+    if (agent.state === PedestrianState.CROSSING && currNode.isCrosswalk && targetNode.isCrosswalk) {
+      const cNormX = normX;
+      const cNormZ = normZ;
+      const toCurX = nextX - currNode.x;
+      const toCurZ = nextZ - currNode.z;
+      const latDist = toCurX * cNormX + toCurZ * cNormZ;
+      if (Math.abs(latDist) > CONFIG.NPC_BEHAVIOR.CROSSWALK.MAX_DRIFT_PULLBACK) {
+        const clampOffset = Math.sign(latDist) * CONFIG.NPC_BEHAVIOR.CROSSWALK.MAX_LATERAL_OFFSET;
+        nextX -= cNormX * (latDist - clampOffset);
+        nextZ -= cNormZ * (latDist - clampOffset);
+      } else if (Math.abs(latDist) > CONFIG.NPC_BEHAVIOR.CROSSWALK.MAX_LATERAL_OFFSET) {
+        nextX -= cNormX * (latDist - Math.sign(latDist) * 0.8) * Math.min(1.0, dt * 5.0);
+        nextZ -= cNormZ * (latDist - Math.sign(latDist) * 0.8) * Math.min(1.0, dt * 5.0);
+      }
+    }
 
     const currY = (currNode.isArcade || !currNode.isCrosswalk) ? CONFIG.ROADS.ELEVATION.SIDEWALK : (CONFIG.ROADS.ELEVATION.ROAD + 0.01);
     const targetY = (targetNode.isArcade || !targetNode.isCrosswalk) ? CONFIG.ROADS.ELEVATION.SIDEWALK : (CONFIG.ROADS.ELEVATION.ROAD + 0.01);
@@ -561,31 +956,56 @@ export class PedestrianSystem {
     agent.avoidVx *= Math.max(0, 1.0 - dt * 6.0);
     agent.avoidVz *= Math.max(0, 1.0 - dt * 6.0);
 
-    // 4. 防穿牆碰撞檢測 (若即將踏入建築物，推向建築外緣)
+    // 4. 防穿牆碰撞檢測 (若即將踏入建築物，阻擋其向牆內的位移，嚴禁向後推動)
     for (let bIdx = 0; bIdx < buildingColliders.length; bIdx++) {
       const b = buildingColliders[bIdx];
-      if (nextX >= b.minX - 0.3 && nextX <= b.maxX + 0.3 && nextZ >= b.minZ - 0.3 && nextZ <= b.maxZ + 0.3) {
-        // 修正回邊緣
-        const dLeft = Math.abs(nextX - b.minX);
-        const dRight = Math.abs(nextX - b.maxX);
-        const dTop = Math.abs(nextZ - b.minZ);
-        const dBottom = Math.abs(nextZ - b.maxZ);
-        const minD = Math.min(dLeft, dRight, dTop, dBottom);
-        if (minD === dLeft) nextX = b.minX - 0.5;
-        else if (minD === dRight) nextX = b.maxX + 0.5;
-        else if (minD === dTop) nextZ = b.minZ - 0.5;
-        else nextZ = b.maxZ + 0.5;
+      const margin = 0.2;
+      if (nextX >= b.minX - margin && nextX <= b.maxX + margin && nextZ >= b.minZ - margin && nextZ <= b.maxZ + margin) {
+        if (agent.x < b.minX - margin) nextX = Math.min(nextX, b.minX - margin);
+        else if (agent.x > b.maxX + margin) nextX = Math.max(nextX, b.maxX + margin);
+        if (agent.z < b.minZ - margin) nextZ = Math.min(nextZ, b.minZ - margin);
+        else if (agent.z > b.maxZ + margin) nextZ = Math.max(nextZ, b.maxZ + margin);
+
+        if (nextX >= b.minX - margin && nextX <= b.maxX + margin && nextZ >= b.minZ - margin && nextZ <= b.maxZ + margin) {
+          nextX = agent.x;
+          nextZ = agent.z;
+          agent.isTurningAround = true;
+          agent.turnAroundTimer = 0.4;
+          agent.speed = 0;
+        }
         break;
       }
     }
 
-    // 朝向平滑旋轉
-    if (agent.speed > 0.1) {
-      const targetAngle = Math.atan2(segDx, segDz);
+    // 朝向平滑旋轉與倒退走每幀檢查
+    if (agent.speed > 0.05) {
       let angleDiff = targetAngle - agent.rotationY;
       while (angleDiff > Math.PI) angleDiff -= Math.PI * 2;
       while (angleDiff < -Math.PI) angleDiff += Math.PI * 2;
-      agent.rotationY += angleDiff * Math.min(1.0, dt * 10.0);
+      const maxTurnStep = (CONFIG.NPC_BEHAVIOR.NO_WALK_BACKWARDS.MAX_TURN_RATE_DEG_PER_SEC * Math.PI / 180) * dt;
+      agent.rotationY += Math.sign(angleDiff) * Math.min(Math.abs(angleDiff), maxTurnStep);
+
+      // dot(面向, 速度) < 0 超過 0.3s 強制修正轉向
+      const curFwdX = Math.sin(agent.rotationY);
+      const curFwdZ = Math.cos(agent.rotationY);
+      const dispX = nextX - agent.x;
+      const dispZ = nextZ - agent.z;
+      const dispLen = Math.hypot(dispX, dispZ);
+      if (dispLen > 0.01) {
+        const dispDot = curFwdX * (dispX / dispLen) + curFwdZ * (dispZ / dispLen);
+        if (dispDot < -0.05) {
+          agent.wrongFacingTimer = (agent.wrongFacingTimer || 0) + dt;
+          if (agent.wrongFacingTimer > CONFIG.NPC_BEHAVIOR.NO_WALK_BACKWARDS.WRONG_FACING_TIMEOUT_SEC) {
+            agent.rotationY = Math.atan2(dispX, dispZ);
+            this.backwardsWalkCount++;
+            agent.wrongFacingTimer = 0;
+          }
+        } else {
+          agent.wrongFacingTimer = 0;
+        }
+      } else {
+        agent.wrongFacingTimer = 0;
+      }
     }
 
     agent.x = nextX;
@@ -615,7 +1035,6 @@ export class PedestrianSystem {
 
     // 檢查是否為斑馬線路口
     if (arrivedNode.isCrosswalk && agent.state !== PedestrianState.CROSSING) {
-      // 尋找斑馬線過街邊
       const crosswalkEdge = arrivedNode.edges.find((e) => e.isCrosswalk);
       if (crosswalkEdge) {
         const sig = this.getAgentCrossingSignal(agent);
@@ -624,17 +1043,59 @@ export class PedestrianSystem {
           ? (sig.state === 'walk' && sig.remainingSec >= neededSec)
           : this.isCrosswalkGreen;
 
-        if (!canCross && Math.random() >= CONFIG.PEDESTRIAN.CROSSWALK_JAYWALK_CHANCE) {
-          agent.state = PedestrianState.WAITING_CROSSWALK;
-          agent.targetSpeed = 0;
-          agent.targetNodeId = crosswalkEdge.target;
-          agent.edgeLength = crosswalkEdge.distance;
-          return;
-        } else {
+        if (canCross) {
           agent.state = PedestrianState.CROSSING;
           agent.targetSpeed = 1.35;
           agent.targetNodeId = crosswalkEdge.target;
           agent.edgeLength = crosswalkEdge.distance;
+          this.crossingsTotal++;
+          this.crossingsOnZebra++;
+          return;
+        } else if (agent.isViolator && agent.violationType === 'jaywalk_red_light') {
+          // 違規闖紅燈過街
+          agent.state = PedestrianState.CROSSING;
+          agent.targetSpeed = 1.35;
+          agent.targetNodeId = crosswalkEdge.target;
+          agent.edgeLength = crosswalkEdge.distance;
+          this.crossingsTotal++;
+          this.crossingsOnZebra++;
+          this.crossingsViolations++;
+          if (agent.violationTimer === 0) {
+            agent.violationTimer = 1;
+            this.pedestrianViolationsStats.jaywalkRed++;
+            this.pedestrianViolationsStats.total++;
+            window.dispatchEvent(new CustomEvent('violation:committed', {
+              detail: { actorType: 'pedestrian', id: agent.id, violationType: 'jaywalk_red_light', position: { x: agent.x, z: agent.z }, timestamp: Date.now() }
+            }));
+          }
+          return;
+        } else {
+          // 守規等紅燈：沿路緣分散站位 (相距 0.8m，最多 6 個站位，不可堆在同一點)
+          agent.state = PedestrianState.WAITING_CROSSWALK;
+          agent.targetSpeed = 0;
+          agent.targetNodeId = crosswalkEdge.target;
+          agent.edgeLength = crosswalkEdge.distance;
+
+          let slotIdx = 0;
+          for (const other of this.agents) {
+            if (other.active && other.id !== agent.id && other.state === PedestrianState.WAITING_CROSSWALK && other.currentNodeId === arrivedNode.id) {
+              slotIdx++;
+            }
+          }
+          slotIdx = slotIdx % CONFIG.NPC_BEHAVIOR.PEDESTRIAN.MAX_WAITING_SLOTS;
+          agent.curbWaitingSlotIndex = slotIdx;
+
+          const cTarget = this.network!.nodes[crosswalkEdge.target];
+          const cDx = cTarget.x - arrivedNode.x;
+          const cDz = cTarget.z - arrivedNode.z;
+          const cLen = Math.hypot(cDx, cDz) || 1.0;
+          const curbTangentX = -cDz / cLen;
+          const curbTangentZ = cDx / cLen;
+          const slotOffset = (slotIdx - 2.5) * CONFIG.NPC_BEHAVIOR.PEDESTRIAN.CURB_WAITING_SLOT_SPACING;
+          agent.curbWaitingOffsetX = curbTangentX * slotOffset;
+          agent.curbWaitingOffsetZ = curbTangentZ * slotOffset;
+          agent.x = arrivedNode.x + agent.curbWaitingOffsetX;
+          agent.z = arrivedNode.z + agent.curbWaitingOffsetZ;
           return;
         }
       }
@@ -644,7 +1105,7 @@ export class PedestrianSystem {
     if (agent.state === PedestrianState.WALKING && Math.random() < CONFIG.PEDESTRIAN.IDLE_CHANCE_AT_INTERSECTION) {
       agent.state = PedestrianState.IDLE;
       agent.stateTimer = 3.0 + Math.random() * 8.0;
-      agent.gesture = Math.random() < 0.5 ? 1 : 0; // 看手機
+      agent.gesture = Math.random() < 0.5 ? 1 : 0;
     }
 
     // 進入店家機率 (8% 機率走進店家)
@@ -652,13 +1113,44 @@ export class PedestrianSystem {
       agent.insideBuildingTimer = 8.0 + Math.random() * 16.0;
     }
 
-    // 選擇下一個目標邊 (避免立刻 180 度原路折返，除非無其他出路)
+    // 選擇下一個目標邊：導航向遠程目標節點，避開擁擠節點
     const validEdges = arrivedNode.edges.filter((e) => e.target !== agent.prevNodeId);
-    const chosenEdge = validEdges.length > 0
-      ? validEdges[Math.floor(Math.random() * validEdges.length)]
-      : (arrivedNode.edges[0] || null);
+    let candidateEdges = validEdges.length > 0 ? [...validEdges] : [...arrivedNode.edges];
+
+    if (agent.longTermGoalNodeId !== undefined && candidateEdges.length > 0) {
+      const goalNode = this.network!.nodes[agent.longTermGoalNodeId];
+      if (goalNode) {
+        candidateEdges.sort((a, b) => {
+          const na = this.network!.nodes[a.target];
+          const nb = this.network!.nodes[b.target];
+          const da = Math.hypot(na.x - goalNode.x, na.z - goalNode.z);
+          const db = Math.hypot(nb.x - goalNode.x, nb.z - goalNode.z);
+          return da - db;
+        });
+      }
+    }
+
+    const chosenEdge = candidateEdges[0] || null;
 
     if (chosenEdge) {
+      const nextTargetNode = this.network!.nodes[chosenEdge.target];
+      const newDx = nextTargetNode.x - arrivedNode.x;
+      const newDz = nextTargetNode.z - arrivedNode.z;
+      const newAngle = Math.atan2(newDx, newDz);
+
+      let diff = newAngle - agent.rotationY;
+      while (diff > Math.PI) diff -= Math.PI * 2;
+      while (diff < -Math.PI) diff += Math.PI * 2;
+
+      // 若夾角超過門檻或折返，先原地轉身再走
+      if (Math.abs(diff) > (CONFIG.NPC_BEHAVIOR.NO_WALK_BACKWARDS.REVERSE_ANGLE_THRESHOLD_DEG * Math.PI / 180)) {
+        agent.isTurningAround = true;
+        agent.turnAroundTimer = CONFIG.NPC_BEHAVIOR.NO_WALK_BACKWARDS.TURN_AROUND_TIME_MIN + Math.random() * (CONFIG.NPC_BEHAVIOR.NO_WALK_BACKWARDS.TURN_AROUND_TIME_MAX - CONFIG.NPC_BEHAVIOR.NO_WALK_BACKWARDS.TURN_AROUND_TIME_MIN);
+        agent.speed = 0;
+        agent.avoidVx = 0;
+        agent.avoidVz = 0;
+      }
+
       agent.targetNodeId = chosenEdge.target;
       agent.edgeLength = chosenEdge.distance;
       if (chosenEdge.isCrosswalk) {
@@ -672,13 +1164,14 @@ export class PedestrianSystem {
   }
 
   /**
-   * 空間雜湊網格分離排斥計算 (避免行人重疊)
+   * 空間雜湊網格分離排斥計算 (0.7m 個人空間，保證身體不重疊，結伴同行組除外)
    */
   private calculateSeparation(agent: PedestrianAgent, _dt: number): void {
     const inv = 1.0 / this.cellSize;
     const gx = Math.floor(agent.x * inv);
     const gz = Math.floor(agent.z * inv);
-    const avoidDist = CONFIG.PEDESTRIAN.AVOID_PEDESTRIAN_RADIUS; // 0.8m
+    const avoidDist = 1.35; // 1.35m 個人空間排斥 (確保非同伴不進入 1.2m 聚集判定門檻)
+    const sepForce = CONFIG.NPC_BEHAVIOR.PEDESTRIAN.SEPARATION_FORCE; // 5.0
 
     for (let ox = -1; ox <= 1; ox++) {
       for (let oz = -1; oz <= 1; oz++) {
@@ -692,14 +1185,23 @@ export class PedestrianSystem {
           const other = this.agents[otherIdx];
           if (!other || !other.active) continue;
 
+          // 結伴同行組成員保持同伴間距，不施加激烈排斥力
+          if (agent.companionGroupId !== undefined && agent.companionGroupId === other.companionGroupId) {
+            continue;
+          }
+
           const dx = agent.x - other.x;
           const dz = agent.z - other.z;
           const dist = Math.hypot(dx, dz);
 
           if (dist < avoidDist && dist > 0.05) {
-            const force = (avoidDist - dist) * 1.8;
+            const force = (avoidDist - dist) * sepForce;
             agent.avoidVx += (dx / dist) * force;
             agent.avoidVz += (dz / dist) * force;
+            if (agent.lateralOffset !== undefined) {
+              agent.lateralOffset += Math.sign(dx) * force * _dt * 0.25;
+              agent.lateralOffset = Math.max(-0.85, Math.min(0.85, agent.lateralOffset));
+            }
           }
         }
       }
@@ -745,6 +1247,7 @@ export class PedestrianSystem {
     let crossing = 0;
     let evading = 0;
     let panic = 0;
+    let hailing = 0;
     let total = 0;
 
     for (const a of this.agents) {
@@ -756,7 +1259,11 @@ export class PedestrianSystem {
       else if (a.state === PedestrianState.CROSSING) crossing++;
       else if (a.state === PedestrianState.EVADING) evading++;
       else if (a.state === PedestrianState.PANIC) panic++;
+      else if (a.state === PedestrianState.HAILING_TAXI) hailing++;
     }
+
+    const totalActive = Math.max(1, total);
+    const vRate = (this.pedestrianViolationsStats.total / totalActive) * 100;
 
     return {
       total,
@@ -766,9 +1273,165 @@ export class PedestrianSystem {
       crossing,
       evading,
       panic,
+      hailing,
+      crowdedCount: this.crowdedCount,
+      crowdedRatePercent: Math.round(this.crowdedRatePercent * 10) / 10,
+      crossingsTotal: this.crossingsTotal,
+      crossingsOnZebra: this.crossingsOnZebra,
+      crossingsViolations: this.crossingsViolations,
+      backwardsWalkCount: this.backwardsWalkCount,
+      violationsCount: { ...this.pedestrianViolationsStats },
+      violationRatePercent: Math.round(vRate * 10) / 10,
       aiTimeMs: this.lastAiTimeMs,
       drawCalls
     };
+  }
+
+  /**
+   * 啟動 60 秒行人行為抽樣 (供 F8 與自動測試腳本使用)
+   */
+  public startPedestrianSampling(): void {
+    this.samplingActive = true;
+    this.samplingTimer = 60.0;
+    this.samplingInitialBackwards = this.backwardsWalkCount;
+    this.samplingInitialCrossTotal = this.crossingsTotal;
+    this.samplingInitialCrossZebra = this.crossingsOnZebra;
+    this.samplingInitialCrossViolations = this.crossingsViolations;
+    this.samplingInitialViolations = { ...this.pedestrianViolationsStats };
+    this.samplingCrowdRateSum = 0;
+    this.samplingCrowdRateCount = 0;
+    this.samplingReport = null;
+    console.log('[PedestrianSystem] 開始 60 秒行人行為抽樣評估...');
+  }
+
+  public isSamplingActive(): boolean {
+    return this.samplingActive;
+  }
+
+  public getSamplingRemainingSec(): number {
+    return Math.max(0, this.samplingTimer);
+  }
+
+  /**
+   * 取得 60 秒行為抽樣報告
+   */
+  public getPedestrianSamplingReport(): PedestrianSamplingReport | null {
+    return this.samplingReport;
+  }
+
+  /**
+   * 尋找指定半徑內叫車 (HAILING_TAXI) 的行人
+   */
+  public findHailingPedestrian(nearPos: Point2D, radius: number): PedestrianAgent | null {
+    let bestDistSq = radius * radius;
+    let bestAgent: PedestrianAgent | null = null;
+    for (const a of this.agents) {
+      if (!a.active || a.state !== PedestrianState.HAILING_TAXI) continue;
+      const dSq = (a.x - nearPos.x) * (a.x - nearPos.x) + (a.z - nearPos.z) * (a.z - nearPos.z);
+      if (dSq < bestDistSq) {
+        bestDistSq = dSq;
+        bestAgent = a;
+      }
+    }
+    return bestAgent;
+  }
+
+  /**
+   * 行人上計程車：將行人從地圖隱藏停用，並回傳外觀以顯示在計程車後座
+   */
+  public boardTaxi(agentId: number): DriverAppearance {
+    const agent = this.agents.find((a) => a.id === agentId);
+    if (agent && agent.active) {
+      agent.active = false;
+      return {
+        skinColorHex: agent.skinColorHex,
+        shirtColorHex: agent.shirtColorHex,
+        hairColorHex: agent.hairColorHex,
+        hatType: 'none',
+        helmetColorHex: '#ffffff',
+        hasMask: Math.random() < CONFIG.DRIVERS.ACCESSORIES.MASK_CHANCE,
+        hasRaincoat: false,
+        raincoatColorHex: CONFIG.DRIVERS.ACCESSORIES.RAINCOAT_COLORS[0]
+      };
+    }
+    return {
+      skinColorHex: '#f8d5b8',
+      shirtColorHex: '#38bdf8',
+      hairColorHex: '#1e1b18',
+      hatType: 'none',
+      helmetColorHex: '#ffffff',
+      hasMask: false,
+      hasRaincoat: false,
+      raincoatColorHex: '#fef08a'
+    };
+  }
+
+  /**
+   * 計程車乘客到站下車：在人行道上重新生成為一般步行行人
+   */
+  public spawnDropoffPassenger(x: number, z: number, appearance: DriverAppearance): void {
+    if (!this.network || this.network.nodes.length === 0) return;
+    const inactiveAgent = this.agents.find((a) => !a.active);
+    if (!inactiveAgent) return;
+    const node = this.findNearestNodeWeighted(x, z, 35.0) || this.network.nodes[0];
+    if (!node || node.edges.length === 0) return;
+    const edge = node.edges[Math.floor(Math.random() * node.edges.length)];
+    inactiveAgent.active = true;
+    inactiveAgent.x = node.x;
+    inactiveAgent.y = CONFIG.ROADS.SIDEWALK_HEIGHT;
+    inactiveAgent.z = node.z;
+    inactiveAgent.currentNodeId = node.id;
+    inactiveAgent.targetNodeId = edge.target;
+    inactiveAgent.prevNodeId = -1;
+    inactiveAgent.pathProgress = 0;
+    inactiveAgent.edgeLength = edge.distance;
+    inactiveAgent.speed = 1.3;
+    inactiveAgent.targetSpeed = 1.3;
+    inactiveAgent.state = PedestrianState.WALKING;
+    inactiveAgent.stateTimer = 0;
+    inactiveAgent.insideBuildingTimer = 0;
+    inactiveAgent.skinColorHex = appearance.skinColorHex;
+    inactiveAgent.shirtColorHex = appearance.shirtColorHex;
+    inactiveAgent.hairColorHex = appearance.hairColorHex;
+    inactiveAgent.pantsColorHex = '#334155';
+    inactiveAgent.heightScale = 1.0;
+    inactiveAgent.widthScale = 1.0;
+    inactiveAgent.accessoryType = 'none';
+    inactiveAgent.gesture = 0;
+  }
+
+  /**
+   * 彈出駕駛 (玩家搶車/車禍)：將駕駛從車輛移出並轉交給行人系統進入 PANIC (受驚逃跑) 狀態
+   */
+  public spawnEjectedDriver(x: number, z: number, appearance: DriverAppearance): number {
+    if (!this.network || this.network.nodes.length === 0) return -1;
+    const inactiveAgent = this.agents.find((a) => !a.active);
+    if (!inactiveAgent) return -1;
+    const node = this.findNearestNodeWeighted(x, z, 40.0) || this.network.nodes[0];
+    if (!node || node.edges.length === 0) return -1;
+    const edge = node.edges[0];
+    inactiveAgent.active = true;
+    inactiveAgent.x = x;
+    inactiveAgent.y = CONFIG.ROADS.SIDEWALK_HEIGHT;
+    inactiveAgent.z = z;
+    inactiveAgent.currentNodeId = node.id;
+    inactiveAgent.targetNodeId = edge.target;
+    inactiveAgent.prevNodeId = -1;
+    inactiveAgent.pathProgress = 0;
+    inactiveAgent.edgeLength = edge.distance;
+    inactiveAgent.speed = CONFIG.PEDESTRIAN.PANIC_SPEED_MPS;
+    inactiveAgent.targetSpeed = CONFIG.PEDESTRIAN.PANIC_SPEED_MPS;
+    inactiveAgent.state = PedestrianState.PANIC;
+    inactiveAgent.stateTimer = 12.0; // 驚慌逃跑 12 秒
+    inactiveAgent.gesture = 3; // 驚恐揮手
+    inactiveAgent.skinColorHex = appearance.skinColorHex;
+    inactiveAgent.shirtColorHex = appearance.shirtColorHex;
+    inactiveAgent.hairColorHex = appearance.hairColorHex;
+    inactiveAgent.pantsColorHex = '#1e293b';
+    inactiveAgent.heightScale = 1.0;
+    inactiveAgent.widthScale = 1.0;
+    inactiveAgent.accessoryType = 'none';
+    return inactiveAgent.id;
   }
 
   public getIsCrosswalkGreen(): boolean {

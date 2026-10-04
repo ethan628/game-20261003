@@ -31599,6 +31599,226 @@
         "operator:zh": "阜爾運通股份有限公司",
         "parking": "surface"
       }
+    },
+    {
+      "type": "node",
+      "id": 292780459,
+      "lat": 24.8286025,
+      "lon": 121.7735504,
+      "tags": {
+        "highway": "traffic_signals"
+      }
+    },
+    {
+      "type": "node",
+      "id": 292781014,
+      "lat": 24.8285407,
+      "lon": 121.7736232,
+      "tags": {
+        "highway": "traffic_signals"
+      }
+    },
+    {
+      "type": "node",
+      "id": 292781017,
+      "lat": 24.8293235,
+      "lon": 121.7768354,
+      "tags": {
+        "highway": "traffic_signals"
+      }
+    },
+    {
+      "type": "node",
+      "id": 292781045,
+      "lat": 24.8275059,
+      "lon": 121.7745913,
+      "tags": {
+        "highway": "traffic_signals",
+        "traffic_signals": "signal"
+      }
+    },
+    {
+      "type": "node",
+      "id": 292781050,
+      "lat": 24.8301528,
+      "lon": 121.7721114,
+      "tags": {
+        "highway": "traffic_signals",
+        "traffic_signals": "signal"
+      }
+    },
+    {
+      "type": "node",
+      "id": 292781067,
+      "lat": 24.8278539,
+      "lon": 121.7726094,
+      "tags": {
+        "highway": "traffic_signals"
+      }
+    },
+    {
+      "type": "node",
+      "id": 2083150145,
+      "lat": 24.8287938,
+      "lon": 121.7715869,
+      "tags": {
+        "highway": "traffic_signals",
+        "traffic_signals": "signal"
+      }
+    },
+    {
+      "type": "node",
+      "id": 2083150150,
+      "lat": 24.8257264,
+      "lon": 121.7712469,
+      "tags": {
+        "highway": "traffic_signals"
+      }
+    },
+    {
+      "type": "node",
+      "id": 2083150162,
+      "lat": 24.8256962,
+      "lon": 121.7712975,
+      "tags": {
+        "highway": "traffic_signals"
+      }
+    },
+    {
+      "type": "node",
+      "id": 2109074134,
+      "lat": 24.8223512,
+      "lon": 121.7699855,
+      "tags": {
+        "highway": "traffic_signals"
+      }
+    },
+    {
+      "type": "node",
+      "id": 2109074364,
+      "lat": 24.8242626,
+      "lon": 121.7707669,
+      "tags": {
+        "highway": "traffic_signals"
+      }
+    },
+    {
+      "type": "node",
+      "id": 2109074366,
+      "lat": 24.8242862,
+      "lon": 121.7707032,
+      "tags": {
+        "highway": "traffic_signals"
+      }
+    },
+    {
+      "type": "node",
+      "id": 2109074424,
+      "lat": 24.8254219,
+      "lon": 121.771185,
+      "tags": {
+        "highway": "traffic_signals"
+      }
+    },
+    {
+      "type": "node",
+      "id": 2109074635,
+      "lat": 24.829384,
+      "lon": 121.7767308,
+      "tags": {
+        "highway": "traffic_signals"
+      }
+    },
+    {
+      "type": "node",
+      "id": 4060936347,
+      "lat": 24.8305234,
+      "lon": 121.777662,
+      "tags": {
+        "highway": "traffic_signals"
+      }
+    },
+    {
+      "type": "node",
+      "id": 4060936348,
+      "lat": 24.830454,
+      "lon": 121.7777737,
+      "tags": {
+        "highway": "traffic_signals"
+      }
+    },
+    {
+      "type": "node",
+      "id": 4061104556,
+      "lat": 24.8278952,
+      "lon": 121.7725622,
+      "tags": {
+        "highway": "traffic_signals"
+      }
+    },
+    {
+      "type": "node",
+      "id": 4424099293,
+      "lat": 24.8294211,
+      "lon": 121.7766696,
+      "tags": {
+        "crossing": "traffic_signals",
+        "highway": "crossing"
+      }
+    },
+    {
+      "type": "node",
+      "id": 5073495875,
+      "lat": 24.8268927,
+      "lon": 121.7717274,
+      "tags": {
+        "highway": "traffic_signals"
+      }
+    },
+    {
+      "type": "node",
+      "id": 5198299627,
+      "lat": 24.82547,
+      "lon": 121.7711446,
+      "tags": {
+        "highway": "traffic_signals"
+      }
+    },
+    {
+      "type": "node",
+      "id": 5198299647,
+      "lat": 24.8268624,
+      "lon": 121.7717918,
+      "tags": {
+        "highway": "traffic_signals"
+      }
+    },
+    {
+      "type": "node",
+      "id": 5801754961,
+      "lat": 24.8291822,
+      "lon": 121.776427,
+      "tags": {
+        "highway": "traffic_signals"
+      }
+    },
+    {
+      "type": "node",
+      "id": 5801754962,
+      "lat": 24.8291196,
+      "lon": 121.7764836,
+      "tags": {
+        "highway": "traffic_signals"
+      }
+    },
+    {
+      "type": "node",
+      "id": 6177918694,
+      "lat": 24.8309453,
+      "lon": 121.777992,
+      "tags": {
+        "highway": "traffic_signals"
+      }
     }
   ]
 }

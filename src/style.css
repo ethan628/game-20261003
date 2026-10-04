@@ -59,6 +59,10 @@ html, body {
   min-width: 260px;
 }
 
+.hud-card.hidden {
+  display: none !important;
+}
+
 .hud-header {
   display: flex;
   align-items: center;

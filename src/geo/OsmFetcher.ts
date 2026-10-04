@@ -88,9 +88,8 @@ export class OsmFetcher {
       [out:json][timeout:${Math.round(CONFIG.GEO.REQUEST_TIMEOUT_MS / 1000)}];
       (
         way["highway"](${bbox.south},${bbox.west},${bbox.north},${bbox.east});
-        node["highway"="traffic_signals"](${bbox.south},${bbox.west},${bbox.north},${bbox.east});
-        node["crossing"="traffic_signals"](${bbox.south},${bbox.west},${bbox.north},${bbox.east});
-        way["highway"="traffic_signals"](${bbox.south},${bbox.west},${bbox.north},${bbox.east});
+        nwr["highway"="traffic_signals"](${bbox.south},${bbox.west},${bbox.north},${bbox.east});
+        nwr["crossing"="traffic_signals"](${bbox.south},${bbox.west},${bbox.north},${bbox.east});
         way["building"](${bbox.south},${bbox.west},${bbox.north},${bbox.east});
         relation["building"](${bbox.south},${bbox.west},${bbox.north},${bbox.east});
         way["building:part"](${bbox.south},${bbox.west},${bbox.north},${bbox.east});
@@ -102,7 +101,7 @@ export class OsmFetcher {
         way["landuse"~"grass|forest|meadow|recreation_ground|village_green"](${bbox.south},${bbox.west},${bbox.north},${bbox.east});
         way["railway"](${bbox.south},${bbox.west},${bbox.north},${bbox.east});
       );
-      out geom;
+      out center geom;
     `;
 
     const shopQuery = `
@@ -747,11 +746,13 @@ export class OsmFetcher {
     };
 
     // --- D. 交通號誌與路口拓撲分析 ---
+    let rawSignalCount = 0;
     const trafficSignals: TrafficSignalFeature[] = [];
     for (const elem of raw.elements) {
       const tags = elem.tags || {};
       const isSignal = tags.highway === 'traffic_signals' || tags.crossing === 'traffic_signals';
       if (!isSignal) continue;
+      rawSignalCount++;
 
       let lat = elem.lat;
       let lon = elem.lon;
@@ -778,6 +779,21 @@ export class OsmFetcher {
     }
 
     const intersections = TrafficIntersectionBuilder.buildIntersections(roads, trafficSignals);
+    const osmSignalIntersections = intersections.filter((i) => i.hasSignals && i.source === 'osm').length;
+    const autoSignalIntersections = intersections.filter((i) => i.hasSignals && i.source === 'auto').length;
+
+    console.log(
+      `%c[交通號誌第 1 關] Overpass 原始回傳號誌元素數: ${rawSignalCount} 個 (highway/crossing=traffic_signals)`,
+      'color: #10b981; font-weight: bold;'
+    );
+    console.log(
+      `%c[交通號誌第 2 關] 正規化有座標號誌數: ${trafficSignals.length} 個`,
+      'color: #10b981; font-weight: bold;'
+    );
+    console.log(
+      `%c[交通號誌第 3 關] 歸入路口後號誌數: OSM標註=${osmSignalIntersections} 處, 自動補齊=${autoSignalIntersections} 處, 總號誌路口=${intersections.filter((i) => i.hasSignals).length} 處 (總路口 ${intersections.length} 處)`,
+      'color: #10b981; font-weight: bold;'
+    );
 
     return {
       origin: {

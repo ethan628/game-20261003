@@ -22,8 +22,14 @@ export class InputManager {
   public onToggleFloorLabels?: () => void;
   public onTogglePedestrianDebug?: () => void;
   public onToggleTrafficSignalDebug?: () => void;
+  public onCycleTrafficSignalTeleport?: () => void;
   public onToggleWetMode?: () => void;
   public onToggleNightMode?: () => void;
+  public onToggleWeatherModal?: () => void;
+  public onToggleWeatherDebug?: () => void;
+  public onToggleNightAnalysis?: () => void;
+  public onToggleTrafficDebug?: () => void;
+  public onToggleStopLineMeasurement?: () => void;
   private isSuspended = false;
 
   constructor(domElement: HTMLElement) {
@@ -112,6 +118,31 @@ export class InputManager {
       this.onToggleTrafficSignalDebug?.();
       return;
     }
+    if (e.code === 'F10' || e.key === 'F10') {
+      e.preventDefault();
+      this.onCycleTrafficSignalTeleport?.();
+      return;
+    }
+    if (e.code === 'F11' || e.key === 'F11') {
+      e.preventDefault();
+      this.onToggleWeatherDebug?.();
+      return;
+    }
+    if (e.code === 'F12' || e.key === 'F12') {
+      e.preventDefault();
+      this.onToggleNightAnalysis?.();
+      return;
+    }
+    if (e.code === 'F13' || e.key === 'F13' || (e.shiftKey && e.code === 'F1')) {
+      e.preventDefault();
+      this.onToggleTrafficDebug?.();
+      return;
+    }
+    if (e.code === 'F14' || e.key === 'F14' || (e.shiftKey && e.code === 'F2')) {
+      e.preventDefault();
+      this.onToggleStopLineMeasurement?.();
+      return;
+    }
 
     if (e.code === 'Tab') {
       e.preventDefault();
@@ -121,6 +152,10 @@ export class InputManager {
 
     if (e.code === 'KeyM') {
       this.onToggleMenu?.();
+      return;
+    }
+    if (e.code === 'KeyK') {
+      this.onToggleWeatherModal?.();
       return;
     }
     if (e.code === 'KeyG') {

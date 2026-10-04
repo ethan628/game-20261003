@@ -68,6 +68,10 @@ export class GameEngine {
     return this.postProcessing.getSceneRenderInfo();
   }
 
+  public getTimingInfo(): { baseRenderMs: number; postProcessingMs: number } {
+    return this.postProcessing.getTimingInfo();
+  }
+
   public dispose(): void {
     window.removeEventListener('resize', this.resize);
     this.renderer.dispose();

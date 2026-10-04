@@ -31,9 +31,15 @@ export class PropGenerator {
   private polesMesh: THREE.InstancedMesh | null = null;
   private mailboxesMesh: THREE.InstancedMesh | null = null;
   private vendingMesh: THREE.InstancedMesh | null = null;
+  private lampTransforms: THREE.Matrix4[] = [];
+
+  public getLampTransforms(): THREE.Matrix4[] {
+    return this.lampTransforms;
+  }
 
   public generate(roads: RoadFeature[], scene: THREE.Scene, intersections: IntersectionFeature[] = []): void {
     this.dispose(scene);
+    this.lampTransforms = [];
 
     if (!CONFIG.PROPS.ENABLED || roads.length === 0) return;
 
@@ -274,6 +280,7 @@ export class PropGenerator {
 
     // 2. 街燈
     if (lampTransforms.length > 0) {
+      this.lampTransforms = lampTransforms;
       this.lampsMesh = this.buildLampsInstanced(lampTransforms);
       scene.add(this.lampsMesh);
     }
@@ -688,5 +695,6 @@ export class PropGenerator {
     this.polesMesh = null;
     this.mailboxesMesh = null;
     this.vendingMesh = null;
+    this.lampTransforms = [];
   }
 }

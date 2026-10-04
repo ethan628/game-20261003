@@ -12,6 +12,7 @@ export interface PedestrianEdge {
   distance: number;             // 邊距離 (公尺)
   type: PedestrianPathType;     // 路徑類型
   isCrosswalk?: boolean;        // 是否為斑馬線過街邊
+  crossingId?: string;          // 對應之路口斑馬線 ID
 }
 
 export interface PedestrianNode {
@@ -28,8 +29,13 @@ export interface PedestrianNode {
 
 export interface CrosswalkGroup {
   id: number;
+  crossingId?: string;
   nodeIds: number[];
   center: Point2D;
+  p1?: Point2D;
+  p2?: Point2D;
+  width?: number;
+  length?: number;
 }
 
 export interface PedestrianNetworkData {
@@ -45,7 +51,8 @@ export enum PedestrianState {
   WAITING_CROSSWALK = 2,
   CROSSING = 3,
   EVADING = 4,
-  PANIC = 5
+  PANIC = 5,
+  HAILING_TAXI = 6
 }
 
 export interface PedestrianSystemStats {
@@ -56,6 +63,41 @@ export interface PedestrianSystemStats {
   crossing: number;
   evading: number;
   panic: number;
+  hailing?: number;
+  crowdedCount: number;             // 1.2m 內有 2 位以上非同伴
+  crowdedRatePercent: number;       // 聚集比例 (目標 < 3%)
+  crossingsTotal: number;           // 過街總次數
+  crossingsOnZebra: number;         // 經斑馬線次數
+  crossingsViolations: number;      // 違規過街次數
+  backwardsWalkCount: number;       // 倒退走行人數 (目標 0)
+  violationsCount: {
+    jaywalkRed: number;
+    crossNoZebra: number;
+    walkRoadEdge: number;
+    total: number;
+  };
+  violationRatePercent: number;     // 違規比例 (目標約 5~8%)
   aiTimeMs: number;
   drawCalls: number;
 }
+
+export interface PedestrianSamplingReport {
+  samplingDurationSec: number;
+  totalPedestriansSampled: number;
+  backwardsCount: number;           // 目標 0
+  crowdedRatePercent: number;       // 目標 < 3%
+  crowdedEventsCount: number;       // 聚集事件數
+  zebraComplianceRatePercent: number; // 守規過街經斑馬線比例 (目標 100%)
+  crossingsTotal: number;
+  crossingsOnZebra: number;
+  crossingsViolations: number;
+  violationsCount: {
+    jaywalkRed: number;
+    crossNoZebra: number;
+    walkRoadEdge: number;
+    total: number;
+  };
+  violationRatePercent: number;     // 目標約 5~8%
+  isCompliant: boolean;
+}
+

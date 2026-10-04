@@ -476,6 +476,77 @@ export class BuildingGenerator {
         side: THREE.DoubleSide
       });
 
+      // 注入夜間路燈假光照亮、微弱邊緣光、與防止純黑 (#0a0f1c)
+      material.onBeforeCompile = (shader) => {
+        const dummyPos = [];
+        const dummyCols = [];
+        for (let i = 0; i < 8; i++) {
+          dummyPos.push(new THREE.Vector3());
+          dummyCols.push(new THREE.Vector4(0, 0, 0, 0));
+        }
+        shader.uniforms.uNearbyLights = { value: dummyPos };
+        shader.uniforms.uNearbyLightColors = { value: dummyCols };
+        shader.uniforms.uNightFactor = { value: 0.0 };
+        shader.uniforms.uBaseNightBrightness = { value: 1.3 };
+
+        shader.vertexShader = `
+          varying vec3 vCustomWorldPosition;
+        ` + shader.vertexShader.replace(
+          '#include <worldpos_vertex>',
+          `#include <worldpos_vertex>
+           vCustomWorldPosition = (modelMatrix * vec4(transformed, 1.0)).xyz;
+          `
+        );
+
+        shader.fragmentShader = `
+          uniform vec3 uNearbyLights[8];
+          uniform vec4 uNearbyLightColors[8];
+          uniform float uNightFactor;
+          uniform float uBaseNightBrightness;
+          varying vec3 vCustomWorldPosition;
+        ` + shader.fragmentShader.replace(
+          '#include <dithering_fragment>',
+          `
+          #include <dithering_fragment>
+          
+          // 1. 建築垂直漸層 (底部較暗 0.78，向上漸亮至 1.15)
+          float vertGrad = mix(0.78, 1.15, clamp(vCustomWorldPosition.y * 0.05, 0.0, 1.0));
+          gl_FragColor.rgb *= vertGrad;
+
+          // 2. 建築底部假環境遮蔽 (Fake AO: 底部 1.8 公尺內遮蔽 0.72)
+          float fakeAo = smoothstep(0.1, 1.8, vCustomWorldPosition.y);
+          gl_FragColor.rgb *= mix(0.72, 1.0, fakeAo);
+
+          // 3. 頂樓向下淡藍天光
+          float skyWash = smoothstep(6.0, 26.0, vCustomWorldPosition.y);
+          gl_FragColor.rgb += vec3(0.015, 0.025, 0.055) * skyWash * uNightFactor;
+
+          if (uNightFactor > 0.01) {
+            // 4. 附近路燈假光照亮
+            vec3 fakeLightAccum = vec3(0.0);
+            for (int i = 0; i < 8; i++) {
+              vec3 lPos = uNearbyLights[i];
+              vec4 lCol = uNearbyLightColors[i];
+              if (lCol.a > 0.01) {
+                float dist = distance(vCustomWorldPosition, lPos);
+                float atten = 1.0 / (1.0 + 0.10 * dist + 0.02 * dist * dist);
+                float heightFactor = max(0.0, 1.0 - abs(vCustomWorldPosition.y - 3.2) * 0.14);
+                fakeLightAccum += lCol.rgb * (atten * lCol.a * 0.52 * heightFactor);
+              }
+            }
+            gl_FragColor.rgb += fakeLightAccum * uNightFactor * uBaseNightBrightness;
+
+            // 5. 輪廓邊緣光 (Fresnel Rim Light: 弱冷藍光，使剪影與夜空分離)
+            vec3 viewDir = normalize(cameraPosition - vCustomWorldPosition);
+            float rim = 1.0 - max(0.0, dot(geometryNormal, viewDir));
+            vec3 rimColor = vec3(0.08, 0.14, 0.32) * pow(rim, 3.0) * uNightFactor;
+            gl_FragColor.rgb += rimColor;
+          }
+          `
+        );
+        (material as any).customShader = shader;
+      };
+
       this.buildingsMesh = new THREE.Mesh(geometry, material);
       this.buildingsMesh.name = 'BuildingsMesh';
       this.buildingsMesh.castShadow = true;
@@ -484,7 +555,7 @@ export class BuildingGenerator {
       scene.add(this.buildingsMesh);
     }
 
-    // --- 建立窗戶 InstancedMesh (PBR 反射玻璃貼圖) ---
+    // --- 建立窗戶 InstancedMesh (PBR 反射玻璃貼圖 + 夜間自發光) ---
     if (windowTransforms.length > 0) {
       const winW = CONFIG.BUILDINGS.WINDOW.WIDTH;
       const winH = CONFIG.BUILDINGS.WINDOW.HEIGHT;
@@ -493,15 +564,36 @@ export class BuildingGenerator {
       const winTex = TextureGenerator.getWindowAtlasTexture();
       const winMat = new THREE.MeshStandardMaterial({
         map: winTex,
-        roughness: 0.18,
-        metalness: 0.82
+        roughness: 0.20,
+        metalness: 0.75,
+        color: 0x141e2e
       });
+      winMat.defines = { USE_INSTANCING_COLOR: '' };
+
+      winMat.onBeforeCompile = (shader) => {
+        shader.fragmentShader = shader.fragmentShader.replace(
+          '#include <dithering_fragment>',
+          `
+          #include <dithering_fragment>
+          #if defined( USE_COLOR ) || defined( USE_INSTANCING_COLOR )
+            // 窗戶夜間自發光 (暖黃室內燈 / 冷白燈 / 電視藍光)
+            if (dot(vColor.rgb, vec3(0.299, 0.587, 0.114)) > 0.25) {
+              gl_FragColor.rgb += vColor.rgb * 1.35;
+            }
+          #endif
+          `
+        );
+      };
 
       this.windowsInstancedMesh = new THREE.InstancedMesh(winGeo, winMat, windowTransforms.length);
       this.windowsInstancedMesh.name = 'BuildingWindows';
       this.windowsInstancedMesh.castShadow = false;
       this.windowsInstancedMesh.receiveShadow = true;
       this.windowsInstancedMesh.frustumCulled = false;
+      this.windowsInstancedMesh.instanceColor = new THREE.InstancedBufferAttribute(
+        new Float32Array(windowTransforms.length * 3),
+        3
+      );
 
       for (let i = 0; i < windowTransforms.length; i++) {
         this.windowsInstancedMesh.setMatrixAt(i, windowTransforms[i]);
@@ -726,6 +818,10 @@ export class BuildingGenerator {
 
   public getBuildingsMesh(): THREE.Mesh | null {
     return this.buildingsMesh;
+  }
+
+  public getWindowsMesh(): THREE.InstancedMesh | null {
+    return this.windowsInstancedMesh;
   }
 
   public getCollisionData(): BuildingCollisionData[] {

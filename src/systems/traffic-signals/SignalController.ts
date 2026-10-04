@@ -114,10 +114,20 @@ export class SignalController {
     return this.getGroupPedestrianState(group);
   }
 
+  private forceAllRed: boolean = false;
+
+  public setForceAllRed(enabled: boolean): void {
+    this.forceAllRed = enabled;
+  }
+
   /**
    * 取得群組車輛狀態
    */
   public getGroupVehicleState(group: SignalPhaseGroup): VehicleSignalInfo {
+    if (this.forceAllRed) {
+      return { state: 'red', remainingSec: 99 };
+    }
+
     if (this.isNightMode) {
       return {
         state: group === 'A' ? 'flashingYellow' : 'red',

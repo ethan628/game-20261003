@@ -6,7 +6,7 @@
  * 3. 預留日夜模式與通緝違規檢測
  */
 
-import { IntersectionFeature, Point2D, TrafficSignalStats } from '../../geo/OsmTypes.ts';
+import { IntersectionFeature, Point2D, TrafficSignalStats, SignalPhaseGroup } from '../../geo/OsmTypes.ts';
 import { SignalController, VehicleSignalInfo, PedestrianSignalInfo, VehicleSignalState } from './SignalController.ts';
 import { CONFIG } from '../../config.ts';
 
@@ -96,6 +96,32 @@ export class TrafficSignalSystem {
     return ctrl.getPedestrianState(crossingId);
   }
 
+  /**
+   * 【公開介面】取得號誌倒數計時與顏色
+   */
+  public getCountdownSec(intersectionId: string, group: SignalPhaseGroup): { seconds: number; color: 'green' | 'yellow' | 'red' } {
+    const ctrl = this.controllers.get(intersectionId);
+    if (!ctrl) {
+      return { seconds: 0, color: 'green' };
+    }
+    return ctrl.getCountdownSec(group);
+  }
+
+  /**
+   * 【公開介面】強制全城紅燈 (自動化測試與除錯量測使用)
+   */
+  public setForceAllRed(enabled: boolean): void {
+    this.forceAllRed = enabled;
+    for (const ctrl of this.controllers.values()) {
+      ctrl.setForceAllRed(enabled);
+    }
+  }
+
+  public getIsAllRed(): boolean {
+    return this.forceAllRed;
+  }
+
+  private forceAllRed = false;
   /**
    * 【公開介面】預留通緝系統違規判定：檢查實體是否闖紅燈
    */

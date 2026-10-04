@@ -38,35 +38,61 @@ import { PedestrianNetworkData } from './geo/PedestrianTypes.ts';
 import { TrafficSignalSystem } from './systems/traffic-signals/TrafficSignalSystem.ts';
 import { TrafficSignalRenderer } from './world/TrafficSignalRenderer.ts';
 import { TrafficSignalDebugVisualizer } from './world/TrafficSignalDebugVisualizer.ts';
+import { TimeSystem } from './systems/time/TimeSystem.ts';
+import { WeatherSystem } from './systems/weather/WeatherSystem.ts';
+import { WeatherRenderer } from './world/WeatherRenderer.ts';
+import { WeatherAudioManager } from './core/WeatherAudioManager.ts';
+import { WeatherModal } from './ui/WeatherModal.ts';
+import { NightLightingSystem } from './world/NightLightingSystem.ts';
+import { NightSceneAnalyzer } from './systems/weather/NightSceneAnalyzer.ts';
+import { TrafficSystem } from './systems/traffic/TrafficSystem.ts';
+import { TrafficVehicleRenderer } from './world/TrafficVehicleRenderer.ts';
+import { TrafficDebugVisualizer } from './world/TrafficDebugVisualizer.ts';
+import { TrafficVehicle, TrafficSystemStats } from './geo/TrafficTypes.ts';
 
 class GameApp {
-  private engine: GameEngine;
-  private input: InputManager;
-  private collisionSystem: CollisionSystem;
-  private cameraController: CameraController;
-  private worldManager: WorldManager;
-  private osmFetcher: OsmFetcher;
-  private player: Player;
-  private gameLoop: GameLoop;
+  public engine: GameEngine;
+  public input: InputManager;
+  public collisionSystem: CollisionSystem;
+  public cameraController: CameraController;
+  public worldManager: WorldManager;
+  public osmFetcher: OsmFetcher;
+  public player: Player;
+  public gameLoop: GameLoop;
 
-  private hud: HUD;
-  private loadingOverlay: LoadingOverlay;
-  private locationModal: LocationModal;
-  private blipManager: BlipManager;
-  private tileRenderer: MapTileRenderer;
-  private navSystem: NavigationSystem;
-  private navGuide3D: NavigationGuide3D;
-  private minimap: Minimap;
-  private fullscreenMap: FullscreenMap;
-  private mapillaryService: MapillaryService;
-  private streetViewWindow: StreetViewWindow;
-  private buildingInspectorModal: BuildingInspectorModal;
-  private pedestrianSystem: PedestrianSystem;
-  private pedestrianRenderer: PedestrianRenderer;
-  private pedestrianDebug: PedestrianDebugVisualizer;
-  private trafficSignalSystem: TrafficSignalSystem;
-  private trafficSignalRenderer: TrafficSignalRenderer;
-  private trafficSignalDebug: TrafficSignalDebugVisualizer;
+  public hud: HUD;
+  public loadingOverlay: LoadingOverlay;
+  public locationModal: LocationModal;
+  public blipManager: BlipManager;
+  public tileRenderer: MapTileRenderer;
+  public navSystem: NavigationSystem;
+  public navGuide3D: NavigationGuide3D;
+  public minimap: Minimap;
+  public fullscreenMap: FullscreenMap;
+  public mapillaryService: MapillaryService;
+  public streetViewWindow: StreetViewWindow;
+  public buildingInspectorModal: BuildingInspectorModal;
+  public pedestrianSystem: PedestrianSystem;
+  public pedestrianRenderer: PedestrianRenderer;
+  public pedestrianDebug: PedestrianDebugVisualizer;
+  public trafficSignalSystem: TrafficSignalSystem;
+  public trafficSignalRenderer: TrafficSignalRenderer;
+  public trafficSignalDebug: TrafficSignalDebugVisualizer;
+
+  // NPC 交通車流與駕駛系統
+  public trafficSystem: TrafficSystem;
+  public trafficVehicleRenderer: TrafficVehicleRenderer;
+  public trafficDebugVisualizer: TrafficDebugVisualizer;
+
+  // 天氣、時間與夜景假光系統
+  public timeSystem: TimeSystem;
+  public weatherSystem: WeatherSystem;
+  public weatherRenderer: WeatherRenderer;
+  public weatherAudio: WeatherAudioManager;
+  public nightLightingSystem: NightLightingSystem;
+  public weatherModal: WeatherModal;
+  public nightSceneAnalyzer: NightSceneAnalyzer;
+  public totalGameTimeSec = 0;
 
   private isInspectorMode = false;
   private raycaster = new THREE.Raycaster();
@@ -75,6 +101,18 @@ class GameApp {
   private currentProjection: GeoProjection | null = null;
   private isLocationLoading = false;
   private currentLocationName: string = '宜蘭礁溪溫泉市區';
+  private signalTeleportIndex = 0;
+  private lowFpsCounter = 0;
+  private lowFpsUnder30Counter = 0;
+  private isNpcDowngraded = false;
+  private perfStats = {
+    pedestrianMs: 0,
+    trafficSignalMs: 0,
+    trafficMs: 0,
+    mapMs: 0,
+    weatherMs: 0,
+    nightLightingMs: 0
+  };
 
   constructor() {
     const canvasContainer = document.getElementById('game-canvas-container')!;
@@ -115,6 +153,12 @@ class GameApp {
     this.trafficSignalDebug = new TrafficSignalDebugVisualizer(this.engine.scene);
     this.pedestrianSystem.setTrafficSignalSystem(this.trafficSignalSystem);
 
+    this.trafficSystem = new TrafficSystem();
+    this.trafficVehicleRenderer = new TrafficVehicleRenderer(this.engine.scene);
+    this.trafficDebugVisualizer = new TrafficDebugVisualizer(this.engine.scene);
+    this.trafficSystem.setTrafficSignalSystem(this.trafficSignalSystem);
+    this.trafficSystem.setPedestrianSystem(this.pedestrianSystem);
+
     this.mapillaryService = new MapillaryService();
     this.streetViewWindow = new StreetViewWindow(this.input, this.mapillaryService);
     this.streetViewWindow.onSplitChange(() => {
@@ -122,6 +166,59 @@ class GameApp {
     });
 
     this.buildingInspectorModal = new BuildingInspectorModal();
+
+    // 3.5 初始化天氣、時間、夜間假光與音訊子系統
+    this.timeSystem = new TimeSystem();
+    this.weatherSystem = new WeatherSystem();
+    this.weatherAudio = new WeatherAudioManager();
+    this.weatherRenderer = new WeatherRenderer(
+      this.engine.scene,
+      this.timeSystem,
+      this.weatherSystem,
+      this.worldManager.getRoadGenerator(),
+      this.engine.renderer
+    );
+    this.weatherRenderer.setTerrainFeatureGenerator(this.worldManager.getTerrainFeatureGenerator());
+    this.nightLightingSystem = new NightLightingSystem(
+      this.engine.scene,
+      this.worldManager.getPropGenerator(),
+      this.worldManager.getSignboardGenerator(),
+      this.trafficSignalSystem,
+      this.worldManager.getBuildingGenerator(),
+      this.worldManager.getRoadGenerator()
+    );
+    this.weatherModal = new WeatherModal(
+      this.timeSystem,
+      this.weatherSystem,
+      this.weatherAudio,
+      this.nightLightingSystem,
+      this.weatherRenderer
+    );
+    this.nightSceneAnalyzer = new NightSceneAnalyzer(
+      this.timeSystem,
+      this.weatherSystem,
+      this.weatherRenderer,
+      this.nightLightingSystem,
+      this.engine.renderer
+    );
+
+    // 閃電事件連動程序雷聲
+    this.weatherSystem.onLightning((_intensity, delay) => {
+      this.weatherAudio.triggerThunder(delay);
+    });
+
+    // 天文暮光日夜切換連動 (號誌深夜離峰閃黃、招牌自發光)
+    this.weatherRenderer.setNightModeChangeCallback((isNight) => {
+      this.trafficSignalSystem.setNightMode(isNight);
+      this.worldManager.getSignboardGenerator().setNightMode(isNight);
+      this.hud.setNightModeActive(isNight);
+    });
+
+    this.weatherModal.setOnToggleVisibility((visible) => {
+      if (visible) {
+        this.input.exitPointerLock();
+      }
+    });
 
     // 若未設定 Mapillary Token，依規定隱藏 HUD 街景提示按鈕
     if (!this.mapillaryService.hasToken()) {
@@ -132,7 +229,10 @@ class GameApp {
     this.gameLoop = new GameLoop(
       this.update.bind(this),
       this.render.bind(this),
-      (fps) => this.hud.updateFps(fps)
+      (fps) => {
+        this.hud.updateFps(fps);
+        this.checkAutoQualityDowngrade(fps);
+      }
     );
 
     // 5. 綁定事件與回呼
@@ -326,12 +426,26 @@ class GameApp {
     // 按 F8 鍵切換行人路網與狀態除錯視覺化
     const handleTogglePedDebug = () => {
       const isVisible = this.pedestrianDebug.toggle();
+      const isPanelVisible = this.hud.togglePedestrianDebug();
+      if (isPanelVisible) {
+        this.updatePedestrianDebugPanel();
+      }
       this.hud.showNotification(
         isVisible ? '🚶 行人除錯開啟 (青=人行道, 黃=騎樓, 綠/紅=過街, 菱形=狀態)' : '🚶 行人除錯已關閉'
       );
     };
     this.input.onTogglePedestrianDebug = handleTogglePedDebug;
     this.hud.onPedestrianDebugClick(handleTogglePedDebug);
+
+    this.hud.onPedSamplingClick(() => {
+      this.pedestrianSystem.startPedestrianSampling();
+      this.hud.showNotification('⏱️ 已啟動行人 60 秒行為抽樣評估！');
+      this.updatePedestrianDebugPanel();
+    });
+
+    this.hud.onPedRefreshClick(() => {
+      this.updatePedestrianDebugPanel();
+    });
 
     // 按 F9 鍵切換交通號誌除錯視覺化 (綠色=OSM, 橘色=自動補齊, 白色=停止線)
     const handleToggleSignalDebug = () => {
@@ -345,6 +459,46 @@ class GameApp {
     };
     this.input.onToggleTrafficSignalDebug = handleToggleSignalDebug;
     this.hud.onTrafficSignalDebugClick(handleToggleSignalDebug);
+
+    // 按 F10 鍵循環傳送玩家到各號誌路口 (邊緣 15m 面向路口中心)
+    const handleCycleSignalTeleport = () => {
+      const intersections = this.trafficSignalSystem.getIntersections().filter((i) => i.hasSignals);
+      if (intersections.length === 0) {
+        this.hud.showNotification('⚠️ 目前地圖無交通號誌路口');
+        return;
+      }
+
+      const target = intersections[this.signalTeleportIndex % intersections.length];
+      this.signalTeleportIndex++;
+
+      // 選取該路口第 1 條 approach 作為視點
+      const app = target.approaches[0];
+      const az = app ? app.azimuthRad : 0;
+
+      // 傳送到路口邊緣約 16 公尺處、面向路口中心
+      const dist = Math.max(16.0, target.radius + 4.0);
+      const posX = target.center.x - Math.sin(az) * dist;
+      const posZ = target.center.z - Math.cos(az) * dist;
+
+      this.player.teleport(posX, 0, posZ);
+      this.cameraController.reset(az + Math.PI, 14 * (Math.PI / 180));
+
+      const ctrl = this.trafficSignalSystem.getController(target.id);
+      const vStateA = ctrl ? ctrl.getGroupVehicleState('A') : { state: 'red', remainingSec: 0 };
+      const countdownA = ctrl ? ctrl.getCountdownSec('A').seconds : 0;
+      const poleCount = target.poles.length;
+      let headCount = 0;
+      for (const p of target.poles) {
+        headCount += p.hasSecondaryHead ? 3 : 2;
+      }
+
+      const srcName = target.source === 'osm' ? 'OSM實測' : '自動補齊';
+      this.hud.showNotification(
+        `🚦 [${target.id}] ${srcName} | 相位A: ${vStateA.state.toUpperCase()} (${countdownA}s) | 燈桿:${poleCount}支 燈頭:${headCount}組`
+      );
+    };
+    this.input.onCycleTrafficSignalTeleport = handleCycleSignalTeleport;
+    this.hud.onTrafficSignalTeleportClick(handleCycleSignalTeleport);
 
     // 匯出待校正推測建築清單 JSON
     this.hud.onExportEstimatedClick(() => {
@@ -369,6 +523,114 @@ class GameApp {
       this.hud.showNotification('📥 已匯出待校正推測建築清單：jiaoxi_estimated_buildings.json');
     });
 
+    // 按 K 鍵或點擊 HUD 開啟天氣與時間控制面板
+    const handleToggleWeatherModal = () => {
+      this.weatherModal.toggle();
+    };
+    this.input.onToggleWeatherModal = handleToggleWeatherModal;
+    this.hud.onWeatherModalClick(handleToggleWeatherModal);
+
+    // 按 F11 鍵切換天氣與日月診斷覆蓋層
+    const handleToggleWeatherDebug = () => {
+      const isVisible = this.hud.toggleWeatherDebug();
+      this.hud.showNotification(
+        isVisible ? '🌦️ 天氣與時間除錯診斷開啟 (F11)' : '🌦️ 天氣與時間除錯診斷已關閉'
+      );
+    };
+    this.input.onToggleWeatherDebug = handleToggleWeatherDebug;
+    this.hud.onWeatherDebugClick(handleToggleWeatherDebug);
+
+    // 按 F12 鍵切換夜景分區亮度分析面板
+    const handleToggleNightAnalysis = () => {
+      const isVisible = this.hud.toggleNightAnalysis();
+      if (isVisible) {
+        const metrics = this.nightSceneAnalyzer.analyze();
+        this.hud.updateNightAnalysis(this.nightSceneAnalyzer.generateReportHtml(metrics));
+      }
+      this.hud.showNotification(
+        isVisible ? '🌙 夜景分區亮度分析開啟 (F12)' : '🌙 夜景分區亮度分析已關閉'
+      );
+    };
+    this.input.onToggleNightAnalysis = handleToggleNightAnalysis;
+    this.hud.onNightAnalysisClick(handleToggleNightAnalysis);
+
+    // 按 F13 鍵或點擊 HUD 切換車輛與駕駛除錯視覺化
+    const handleToggleTrafficDebug = () => {
+      const isVisible = this.trafficDebugVisualizer.toggle();
+      this.hud.toggleTrafficDebug();
+      this.hud.showNotification(
+        isVisible ? '🚗 駕駛除錯已開啟 (3D標籤: 個性/心情/狀態/喇叭聲波)' : '🚗 駕駛除錯已關閉'
+      );
+    };
+    this.input.onToggleTrafficDebug = handleToggleTrafficDebug;
+    this.hud.onTrafficDebugClick(handleToggleTrafficDebug);
+
+    this.hud.onTrafficSamplingClick(() => {
+      this.trafficSystem.startVehicleSampling();
+      this.hud.showNotification('⏱️ 已啟動車輛 60 秒行為抽樣評估！');
+      const activeVehicles = this.trafficSystem.getActiveVehicles();
+      const trafficStats = this.trafficSystem.getStats(this.trafficVehicleRenderer.getDrawCalls());
+      this.updateTrafficDebugPanel(trafficStats, activeVehicles);
+    });
+
+    this.hud.onTrafficRefreshClick(() => {
+      const activeVehicles = this.trafficSystem.getActiveVehicles();
+      const trafficStats = this.trafficSystem.getStats(this.trafficVehicleRenderer.getDrawCalls());
+      this.updateTrafficDebugPanel(trafficStats, activeVehicles);
+    });
+
+    // 測試操作：強制鳴笛
+    this.hud.onForceHonkClick(() => {
+      const ok = this.trafficSystem.forceHonkNearby({
+        x: this.player.position.x,
+        z: this.player.position.z
+      });
+      this.hud.showNotification(ok ? '📢 已強制附近車輛按喇叭！' : '⚠️ 附近無活躍車輛');
+    });
+
+    // 測試操作：強制煩躁生氣
+    this.hud.onForceAnnoyClick(() => {
+      const ok = this.trafficSystem.forceAnnoyNearby({
+        x: this.player.position.x,
+        z: this.player.position.z
+      });
+      this.hud.showNotification(ok ? '💢 已強制附近駕駛生氣咆哮！' : '⚠️ 附近無活躍車輛');
+    });
+
+    // 測試操作：彈出駕駛 (轉交行人系統逃跑)
+    this.hud.onEjectDriverClick(() => {
+      const ok = this.trafficSystem.ejectNearestDriver({
+        x: this.player.position.x,
+        z: this.player.position.z
+      });
+      this.hud.showNotification(ok ? '🏃 已將最近車輛駕駛彈出為受驚逃跑行人！' : '⚠️ 附近無活躍車輛');
+    });
+
+    // 按 F14 / Shift+F2 或點擊 HUD 切換停止線停等量測面板
+    const handleToggleStopLineMeasurement = () => {
+      const isVisible = this.hud.toggleStopLineMeasurement();
+      if (isVisible) {
+        this.hud.updateStopLineMeasurement(this.trafficSystem.getStopLineMeasurements(), this.trafficSystem.isAllRed());
+      }
+      this.hud.showNotification(
+        isVisible ? '📏 停止線停等量測面板開啟 (F14 / Shift+F2)' : '📏 停止線停等量測面板已關閉'
+      );
+    };
+    this.input.onToggleStopLineMeasurement = handleToggleStopLineMeasurement;
+    this.hud.onStopLineMeasurementClick(handleToggleStopLineMeasurement);
+
+    this.hud.onStopLineToggleAllRedClick(() => {
+      const next = !this.trafficSystem.isAllRed();
+      this.trafficSystem.triggerAllRed(next);
+      this.hud.updateStopLineMeasurement(this.trafficSystem.getStopLineMeasurements(), this.trafficSystem.isAllRed());
+      this.hud.showNotification(next ? '🚨 已啟動全城紅燈 (車輛將減速停等停止線)' : '🟢 已恢復正常交通號誌週期');
+    });
+
+    this.hud.onStopLineRefreshClick(() => {
+      this.hud.updateStopLineMeasurement(this.trafficSystem.getStopLineMeasurements(), this.trafficSystem.isAllRed());
+      this.hud.showNotification('🔄 已重新整理停止線量測數據');
+    });
+
     // 按 R 鍵切換濕潤路面 (雨後微光反光模式)
     const handleToggleWet = () => {
       const isWet = this.worldManager.toggleWetMode();
@@ -385,8 +647,11 @@ class GameApp {
       const isNight = this.worldManager.toggleNightMode();
       this.trafficSignalSystem.setNightMode(isNight);
       this.hud.setNightModeActive(isNight);
+      if (this.timeSystem.getMode() === 'virtual') {
+        this.timeSystem.setVirtualHour(isNight ? 0.0 : 12.0);
+      }
       this.hud.showNotification(
-        isNight ? '🌙 夜間霓虹模式開啟 (店家招牌 Bloom 增強、暖黃街燈、次要路口閃黃閃紅)' : '🌅 黃昏魔幻時刻 (黃金夕陽角度 24°)'
+        isNight ? '🌙 夜間霓虹模式開啟 (店家招牌 Bloom 增強、暖黃街燈、次要路口閃黃閃紅)' : '🌅 恢復白天/黃昏時段'
       );
     };
     this.input.onToggleNightMode = handleToggleNight;
@@ -395,6 +660,7 @@ class GameApp {
     // 點擊畫質切換按鈕 [高 / 中 / 低]
     this.hud.onQualityClick(() => {
       const nextQuality = this.engine.postProcessing.cycleQuality();
+      this.weatherRenderer.setQuality(nextQuality);
       const labels: Record<string, string> = { high: '高', medium: '中', low: '低' };
       this.hud.setQualityText(labels[nextQuality] || '高');
       this.hud.showNotification(`🎨 後處理畫質切換為：${labels[nextQuality] || nextQuality}`);
@@ -468,6 +734,8 @@ class GameApp {
         this.hud.showNotification('🛬 已抵達標記地點！');
       });
     });
+
+    (window as any).__game = this;
   }
 
   /**
@@ -499,6 +767,13 @@ class GameApp {
       // 清空舊世界並建構新世界
       this.worldManager.clear();
       await this.worldManager.buildWorld(data);
+      this.nightLightingSystem.rebuildLampCache();
+
+      // 同步天氣與時間系統經緯度
+      this.timeSystem.setCoordinates(lat, lon);
+      this.weatherSystem.setCoordinates(lat, lon);
+      this.weatherRenderer.setRoadGenerator(this.worldManager.getRoadGenerator());
+      this.weatherRenderer.setTerrainFeatureGenerator(this.worldManager.getTerrainFeatureGenerator());
 
       // 更新 HUD 招牌即時數據
       const signboardStats = this.worldManager.getSignboardStats();
@@ -537,21 +812,27 @@ class GameApp {
       this.minimap.setRoads(data.roads);
       this.fullscreenMap.setData(data.roads, data.shops || [], this.currentProjection);
 
+      // 初始化交通號誌與路口資料
+      const intersections = data.intersections || [];
+
       // 構建行人路網與拓撲圖 (支援 Web Worker 背景多線程加速與逾時主線程備援)
       let pedNetwork = data.pedestrianNetwork;
       if (!pedNetwork) {
-        pedNetwork = await this.buildPedestrianNetworkAsync(data.roads, data.buildings, data.shops || []);
+        pedNetwork = await this.buildPedestrianNetworkAsync(data.roads, data.buildings, data.shops || [], intersections);
         data.pedestrianNetwork = pedNetwork;
       }
       this.pedestrianSystem.setNetwork(pedNetwork);
       this.pedestrianDebug.setNetwork(pedNetwork);
 
       // 初始化交通號誌系統、GPU 實例渲染器與除錯視覺化
-      const intersections = data.intersections || [];
       this.trafficSignalSystem.setIntersections(intersections);
       this.trafficSignalRenderer.buildSceneSignals(intersections);
       this.trafficSignalDebug.setIntersections(intersections);
+      this.trafficDebugVisualizer.setIntersections(intersections);
       this.blipManager.populateTrafficSignals(intersections);
+
+      // 初始化 NPC 交通車流與駕駛系統
+      this.trafficSystem.setRoadsAndIntersections(data.roads, intersections);
 
       // 若街景視窗開啟中，同步更新街景位置
       if (this.streetViewWindow.getIsVisible()) {
@@ -585,6 +866,11 @@ class GameApp {
           this.currentProjection = new GeoProjection(lat, lon);
           this.worldManager.clear();
           await this.worldManager.buildWorld(fallbackData);
+          this.nightLightingSystem.rebuildLampCache();
+          this.timeSystem.setCoordinates(lat, lon);
+          this.weatherSystem.setCoordinates(lat, lon);
+          this.weatherRenderer.setRoadGenerator(this.worldManager.getRoadGenerator());
+          this.weatherRenderer.setTerrainFeatureGenerator(this.worldManager.getTerrainFeatureGenerator());
           const fallbackStats = this.worldManager.getSignboardStats();
           if (fallbackStats) {
             this.hud.updateSignboardStats(fallbackStats);
@@ -611,21 +897,22 @@ class GameApp {
           this.minimap.setRoads(fallbackData.roads);
           this.fullscreenMap.setData(fallbackData.roads, fallbackData.shops || [], this.currentProjection);
 
-          // 構建備援展示行人路網
-          let fallbackPedNetwork = fallbackData.pedestrianNetwork;
-          if (!fallbackPedNetwork) {
-            fallbackPedNetwork = PedestrianNetworkBuilder.buildNetwork(fallbackData.roads, fallbackData.buildings, fallbackData.shops || []);
-            fallbackData.pedestrianNetwork = fallbackPedNetwork;
-          }
-          this.pedestrianSystem.setNetwork(fallbackPedNetwork);
-          this.pedestrianDebug.setNetwork(fallbackPedNetwork);
-
-          // 構建備援展示交通號誌
+          // 構建備援展示交通號誌與行人路網
           const fallbackInters = fallbackData.intersections || [];
           this.trafficSignalSystem.setIntersections(fallbackInters);
           this.trafficSignalRenderer.buildSceneSignals(fallbackInters);
           this.trafficSignalDebug.setIntersections(fallbackInters);
+          this.trafficDebugVisualizer.setIntersections(fallbackInters);
           this.blipManager.populateTrafficSignals(fallbackInters);
+          this.trafficSystem.setRoadsAndIntersections(fallbackData.roads, fallbackInters);
+
+          let fallbackPedNetwork = fallbackData.pedestrianNetwork;
+          if (!fallbackPedNetwork) {
+            fallbackPedNetwork = PedestrianNetworkBuilder.buildNetwork(fallbackData.roads, fallbackData.buildings, fallbackData.shops || [], fallbackInters);
+            fallbackData.pedestrianNetwork = fallbackPedNetwork;
+          }
+          this.pedestrianSystem.setNetwork(fallbackPedNetwork);
+          this.pedestrianDebug.setNetwork(fallbackPedNetwork);
 
           if (this.streetViewWindow.getIsVisible()) {
             this.streetViewWindow.updateLocation(lat, lon, 0, true);
@@ -639,13 +926,13 @@ class GameApp {
   /**
    * 背景 Web Worker 構建行人路網 (附逾時備援)
    */
-  private buildPedestrianNetworkAsync(roads: RoadFeature[], buildings: any[], shops: any[]): Promise<PedestrianNetworkData> {
+  private buildPedestrianNetworkAsync(roads: RoadFeature[], buildings: any[], shops: any[], intersections: any[] = []): Promise<PedestrianNetworkData> {
     return new Promise((resolve) => {
       try {
         const worker = new Worker(new URL('./geo/PedWorker.ts', import.meta.url), { type: 'module' });
         const timer = setTimeout(() => {
           worker.terminate();
-          resolve(PedestrianNetworkBuilder.buildNetwork(roads, buildings, shops));
+          resolve(PedestrianNetworkBuilder.buildNetwork(roads, buildings, shops, intersections));
         }, 3000);
 
         worker.onmessage = (e) => {
@@ -654,22 +941,22 @@ class GameApp {
           if (e.data && e.data.type === 'NETWORK_READY') {
             resolve(e.data.data);
           } else {
-            resolve(PedestrianNetworkBuilder.buildNetwork(roads, buildings, shops));
+            resolve(PedestrianNetworkBuilder.buildNetwork(roads, buildings, shops, intersections));
           }
         };
 
         worker.onerror = () => {
           clearTimeout(timer);
           worker.terminate();
-          resolve(PedestrianNetworkBuilder.buildNetwork(roads, buildings, shops));
+          resolve(PedestrianNetworkBuilder.buildNetwork(roads, buildings, shops, intersections));
         };
 
         worker.postMessage({
           type: 'BUILD_NETWORK',
-          payload: { roads, buildings, shops }
+          payload: { roads, buildings, shops, intersections }
         });
       } catch {
-        resolve(PedestrianNetworkBuilder.buildNetwork(roads, buildings, shops));
+        resolve(PedestrianNetworkBuilder.buildNetwork(roads, buildings, shops, intersections));
       }
     });
   }
@@ -839,8 +1126,50 @@ class GameApp {
       });
     }
 
+    // 逐幀更新天氣與時間系統 (天空穹頂、日月軌跡、GPU 雨絲與水花)
+    const tWeather0 = performance.now();
+    this.totalGameTimeSec += fixedDelta;
+    this.timeSystem.update(fixedDelta);
+    this.weatherSystem.update(fixedDelta);
+    this.weatherRenderer.update(this.player.position, this.totalGameTimeSec);
+
+    // 騎樓/近屋低通濾波判定 (Web Audio 遮蔽)
+    const px = this.player.position.x;
+    const pz = this.player.position.z;
+    let isNearBuilding = false;
+    for (let i = 0; i < colliders.length; i++) {
+      const b = colliders[i];
+      if (px >= b.minX - 1.2 && px <= b.maxX + 1.2 && pz >= b.minZ - 1.2 && pz <= b.maxZ + 1.2) {
+        isNearBuilding = true;
+        break;
+      }
+    }
+    this.weatherAudio.setOcclusion(isNearBuilding);
+    const rainInt = this.weatherSystem.getRainIntensity();
+    const visParams = this.weatherSystem.getVisualParams();
+    const sunMoon = this.timeSystem.getSunMoonInfo();
+    this.weatherAudio.update(rainInt, visParams.windSpeedMps, sunMoon.isNight);
+    this.perfStats.weatherMs = performance.now() - tWeather0;
+
+    // 逐幀更新夜間假光與氛圍系統 (路燈地面光斑、燈頭光暈、店家溢光、號誌地面光斑、雨天倒影、窗戶隨機亮暗)
+    const tNight0 = performance.now();
+    const sunAltDeg = sunMoon.sun.altitudeDeg;
+    const nightFactor = Math.max(0, Math.min(1, (-sunAltDeg - 2.0) / 10.0));
+    const timeInfo = this.timeSystem.getTimeOfDay();
+    this.nightLightingSystem.update(
+      this.player.position,
+      this.engine.camera,
+      nightFactor,
+      visParams.wetness,
+      visParams.rainIntensity,
+      timeInfo.hourFraction,
+      this.totalGameTimeSec
+    );
+    this.perfStats.nightLightingMs = performance.now() - tNight0;
+
     // 更新行人模擬系統 (生成、狀態機、空間避讓、交通信號)
-    const isRaining = this.worldManager.getIsWet();
+    const tPed0 = performance.now();
+    const isRaining = rainInt > 0.05 || this.worldManager.getIsWet();
     this.pedestrianSystem.update(
       fixedDelta,
       playerPos,
@@ -852,20 +1181,28 @@ class GameApp {
     // 更新 GPU 行人批次渲染器與除錯視覺化
     this.pedestrianRenderer.update(this.pedestrianSystem.getAllAgents(), this.player.position);
     this.pedestrianDebug.update(this.pedestrianSystem.getAllAgents(), this.pedestrianSystem.getIsCrosswalkGreen());
+    this.perfStats.pedestrianMs = performance.now() - tPed0;
 
     // 更新 HUD 行人即時統計 (總人數、狀態分布、AI 耗時、Draw Calls)
     this.hud.updatePedestrianStats(this.pedestrianSystem.getStats(this.pedestrianRenderer.getDrawCallsCount()));
 
+    // 若開啟 F8 行人除錯面板，更新除錯內容
+    if (this.hud.isPedDebugVisible) {
+      this.updatePedestrianDebugPanel();
+    }
+
     // 更新交通號誌全域邏輯 (相位狀態機、小綠人閃爍與倒數計時)
+    const tSig0 = performance.now();
     this.trafficSignalSystem.update(fixedDelta);
 
-    // 更新交通號誌 GPU 批次渲染器與除錯視覺化 (僅更新 200m 內，Draw Calls 嚴格為 6)
+    // 更新交通號誌 GPU 批次渲染器與除錯視覺化 (僅更新 300m 內，Draw Calls 嚴格為 6)
     this.trafficSignalRenderer.update(
       this.trafficSignalSystem,
       playerPos,
       performance.now() * 0.001
     );
     this.trafficSignalDebug.update(this.trafficSignalSystem);
+    this.perfStats.trafficSignalMs = performance.now() - tSig0;
 
     // 更新 HUD 交通號誌統計 (路口數、OSM/Auto 比、邏輯耗時、Draw Calls)
     const sigStats = this.trafficSignalSystem.getStats(
@@ -873,6 +1210,329 @@ class GameApp {
       this.trafficSignalRenderer.getDrawCallsCount()
     );
     this.hud.updateTrafficSignalStats(sigStats);
+
+    // 更新 NPC 交通系統 (車流路網、AI 駕駛行為、個性、心情、號誌反應、計程車載客)
+    const tTraffic0 = performance.now();
+    this.trafficSystem.update(fixedDelta, playerPos, isRaining);
+
+    // 更新 GPU 車輛與駕駛批次渲染器與除錯視覺化
+    const activeVehicles = this.trafficSystem.getActiveVehicles();
+    this.trafficVehicleRenderer.update(activeVehicles, this.engine.camera.position);
+    this.trafficDebugVisualizer.update(activeVehicles, this.engine.camera.position);
+    this.perfStats.trafficMs = performance.now() - tTraffic0;
+
+    // 更新 HUD 交通統計
+    const trafficStats = this.trafficSystem.getStats(this.trafficVehicleRenderer.getDrawCalls());
+    this.hud.updateTrafficStats(trafficStats);
+
+    // 若開啟 F13 面板，更新除錯內容
+    if (this.hud.isTrafficDebugVisible) {
+      this.updateTrafficDebugPanel(trafficStats, activeVehicles);
+    }
+
+    // 若開啟 F14 停止線量測面板，更新量測數據
+    if (this.hud.isStopLineMeasurementVisible) {
+      this.hud.updateStopLineMeasurement(this.trafficSystem.getStopLineMeasurements(), this.trafficSystem.isAllRed());
+    }
+
+    this.perfStats.mapMs = this.minimap.getDrawTimeMs();
+
+    // 更新 HUD 天氣與時間小組件
+    const weatherData = this.weatherSystem.getWeatherData();
+    const weatherIcons: Record<string, string> = {
+      clear: '☀️',
+      cloudy: '⛅',
+      overcast: '☁️',
+      fog: '🌫️',
+      light_rain: '🌦️',
+      heavy_rain: '🌧️',
+      thunderstorm: '⛈️',
+      typhoon: '🌀'
+    };
+    const weatherNames: Record<string, string> = {
+      clear: '晴天',
+      cloudy: '多雲',
+      overcast: '陰天',
+      fog: '大霧',
+      light_rain: '小雨',
+      heavy_rain: '大雨',
+      thunderstorm: '雷雨',
+      typhoon: '颱風'
+    };
+    const srcTag =
+      this.weatherSystem.getMode() === 'real'
+        ? weatherData.source === 'cache'
+          ? '離線快取'
+          : '即時'
+        : '虛擬';
+
+    const transInfo = this.weatherSystem.getTransitionInfo();
+    const tTarget = transInfo.targetParams;
+    const isTrans = transInfo.isTransitioning;
+    const transPercent = Math.round(transInfo.progress * 100);
+    const weatherBadge = isTrans ? `${srcTag} 🔄${transPercent}%` : srcTag;
+
+    this.hud.updateWeatherTime(
+      timeInfo.timeString,
+      weatherIcons[weatherData.weatherState] || '🌤️',
+      weatherNames[weatherData.weatherState] || weatherData.weatherState,
+      weatherData.temperature,
+      weatherBadge
+    );
+
+    // 更新 F11 天氣除錯覆蓋層
+    const nightStats = this.nightLightingSystem.getStats();
+    const cacheAgeStr = weatherData.cacheAgeSec !== undefined ? `${weatherData.cacheAgeSec}s` : '無';
+    const httpStatusStr = weatherData.diagnostics?.lastHttpStatus ? `HTTP ${weatherData.diagnostics.lastHttpStatus}` : '連線中/未知';
+    const transBar = isTrans
+      ? `<div style="margin: 4px 0 2px 0; background: rgba(255,255,255,0.15); height: 6px; border-radius: 3px; overflow: hidden;">
+           <div style="background: #38bdf8; height: 100%; width: ${transPercent}%;"></div>
+         </div>
+         <div style="font-size: 10px; color: #38bdf8; margin-bottom: 4px;">過渡進度：${transPercent}% (${transInfo.elapsedSec.toFixed(1)}s / ${transInfo.totalSec.toFixed(1)}s)</div>`
+      : `<div style="font-size: 10px; color: #4ade80; margin-bottom: 2px;">天候狀態：穩定 (無過渡)</div>`;
+
+    const debugHtml = `
+      <div><b>時間模式</b>：[${this.timeSystem.getMode()}] | <b>天候模式</b>：[${this.weatherSystem.getMode()}]</div>
+      <div><b>天氣 API 狀態</b>：${httpStatusStr} | 快取年齡: ${cacheAgeStr} | 來源標記: [${srcTag}]</div>
+      ${transBar}
+      <div><b>太陽方位</b>：仰角 ${sunMoon.sun.altitudeDeg.toFixed(1)}° | 方位 ${sunMoon.sun.azimuthDeg.toFixed(1)}°</div>
+      <div><b>月球方位</b>：仰角 ${sunMoon.moon.altitudeDeg.toFixed(1)}° | 方位 ${sunMoon.moon.azimuthDeg.toFixed(1)}°</div>
+      <div><b>月相照度</b>：${(sunMoon.moonIllumination * 100).toFixed(0)}% (相值 ${(sunMoon.moonPhase).toFixed(2)})</div>
+      <div><b>暮光時段</b>：${sunMoon.twilightPhase.toUpperCase()} | <b>夜景係數</b>：${(nightFactor * 100).toFixed(0)}%</div>
+      <div><b>降雨強度</b>：目前 ${(visParams.rainIntensity * 100).toFixed(0)}% → 目標 ${(tTarget.rainIntensity * 100).toFixed(0)}%</div>
+      <div><b>路面濕潤</b>：目前 ${(visParams.wetness * 100).toFixed(0)}% → 目標 ${(tTarget.wetnessTarget * 100).toFixed(0)}%</div>
+      <div><b>雲層覆蓋</b>：目前 ${(visParams.cloudCover * 100).toFixed(0)}% → 目標 ${(tTarget.cloudCover * 100).toFixed(0)}%</div>
+      <div><b>濃霧倍率</b>：目前 ${visParams.fogDensity.toFixed(2)}x → 目標 ${tTarget.fogDensity.toFixed(2)}x</div>
+      <div><b>風速風向</b>：目前 ${visParams.windSpeedMps.toFixed(1)} m/s → 目標 ${tTarget.windSpeedMps.toFixed(1)} m/s (${((visParams.windAngleRad * 180) / Math.PI).toFixed(0)}°)</div>
+      <div><b>天氣 Draw Calls</b>：${this.weatherRenderer.getDrawCallsCount()} (穹頂+雨絲+水花) | 邏輯: ${this.perfStats.weatherMs.toFixed(2)}ms</div>
+      <div><b>夜景假光貼花</b>：${nightStats.activeDecals} 個 | Draw Calls: ${nightStats.drawCalls} (預算≤8) | 耗時: ${this.perfStats.nightLightingMs.toFixed(2)}ms</div>
+      <div><b>音訊狀態</b>：${this.weatherAudio.getIsOccluded() ? '騎樓低通 (550Hz)' : '開闊街區 (正常)'}</div>
+    `;
+    this.hud.updateWeatherDebug(debugHtml);
+
+    // 更新 F12 夜景分區亮度分析面板 (若開啟)
+    if (this.hud.isNightAnalysisVisible) {
+      const metrics = this.nightSceneAnalyzer.analyze();
+      this.hud.updateNightAnalysis(this.nightSceneAnalyzer.generateReportHtml(metrics));
+    }
+  }
+
+  /**
+   * 後處理低幀率自動降級機制 (偵測到持續 < 45 FPS 時自動降級)
+   */
+  private checkAutoQualityDowngrade(fps: number): void {
+    if (fps > 0 && fps < 45) {
+      this.lowFpsCounter++;
+      // 連續 3 次取樣 (約 1.5 秒) 低於 45 FPS
+      if (this.lowFpsCounter >= 3) {
+        this.lowFpsCounter = 0;
+        const currentQ = this.engine.postProcessing.getQuality();
+        if (currentQ === 'high') {
+          this.engine.postProcessing.setQuality('medium');
+          this.weatherRenderer.setQuality('medium');
+          this.hud.setQualityText('中');
+          this.hud.showNotification('⚡ 偵測到 FPS 低於 45，已自動降級後處理效果至 [中] 以維持流暢度');
+          console.warn('[Performance] FPS < 45，自動降級後處理品質至 medium');
+        } else if (currentQ === 'medium') {
+          this.engine.postProcessing.setQuality('low');
+          this.weatherRenderer.setQuality('low');
+          this.hud.setQualityText('低');
+          this.hud.showNotification('⚡ 偵測到 FPS 低於 45，已自動降級後處理效果至 [低] 以維持流暢度');
+          console.warn('[Performance] FPS < 45，自動降級後處理品質至 low');
+        }
+      }
+    } else {
+      this.lowFpsCounter = 0;
+    }
+
+    // 若連續 3 秒 (6 次取樣) FPS < 30，自動降低行人與車輛更新頻率或數量
+    if (fps > 0 && fps < 30) {
+      this.lowFpsUnder30Counter++;
+      if (this.lowFpsUnder30Counter >= 6 && !this.isNpcDowngraded) {
+        this.isNpcDowngraded = true;
+        CONFIG.PEDESTRIAN.MAX_COUNT = Math.max(50, Math.floor(CONFIG.PEDESTRIAN.MAX_COUNT * 0.7));
+        CONFIG.TRAFFIC.MAX_VEHICLES = Math.max(25, Math.floor(CONFIG.TRAFFIC.MAX_VEHICLES * 0.7));
+        this.hud.showNotification('⚡ 連續 3 秒 FPS < 30，已自動降低 NPC 行人與車輛負載以確保流暢度');
+        console.warn('[Performance] 連續 3 秒 FPS < 30，自動降低 NPC 行人與車輛上限至:', {
+          ped: CONFIG.PEDESTRIAN.MAX_COUNT,
+          traffic: CONFIG.TRAFFIC.MAX_VEHICLES
+        });
+      }
+    } else {
+      this.lowFpsUnder30Counter = Math.max(0, this.lowFpsUnder30Counter - 1);
+    }
+  }
+
+  /**
+   * 取得各主要系統即時效能耗時 (供除錯與診斷回報)
+   */
+  public getPerformanceStats() {
+    const timing = this.engine.getTimingInfo();
+    return {
+      baseRenderMs: Number(timing.baseRenderMs.toFixed(2)),
+      postProcessingMs: Number(timing.postProcessingMs.toFixed(2)),
+      pedestrianMs: Number(this.perfStats.pedestrianMs.toFixed(2)),
+      trafficSignalMs: Number(this.perfStats.trafficSignalMs.toFixed(2)),
+      trafficMs: Number(this.perfStats.trafficMs.toFixed(2)),
+      mapMs: Number(this.perfStats.mapMs.toFixed(2)),
+      weatherMs: Number(this.perfStats.weatherMs.toFixed(2)),
+      nightLightingMs: Number(this.perfStats.nightLightingMs.toFixed(2))
+    };
+  }
+
+  /**
+   * 更新 F13 駕駛除錯面板 HTML 內容
+   */
+  /**
+   * 更新 F8 行人除錯面板 HTML 內容
+   */
+  private updatePedestrianDebugPanel(): void {
+    const stats = this.pedestrianSystem.getStats(this.pedestrianRenderer.getDrawCallsCount());
+    const playerPos = { x: this.player.position.x, z: this.player.position.z };
+
+    // 抽樣報告即時更新
+    this.hud.updatePedestrianSamplingReport(
+      this.pedestrianSystem.getPedestrianSamplingReport(),
+      this.pedestrianSystem.getSamplingRemainingSec(),
+      this.pedestrianSystem.isSamplingActive()
+    );
+
+    const activeAgents = this.pedestrianSystem.getAllAgents().filter((a) => a.active);
+    const nearbyAgents = [...activeAgents]
+      .sort(
+        (a, b) =>
+          Math.hypot(a.x - playerPos.x, a.z - playerPos.z) -
+          Math.hypot(b.x - playerPos.x, b.z - playerPos.z)
+      )
+      .slice(0, 5);
+
+    let listHtml = '';
+    for (const a of nearbyAgents) {
+      const dist = Math.hypot(a.x - playerPos.x, a.z - playerPos.z).toFixed(1);
+      const spd = (a.speed * 3.6).toFixed(1);
+      const violTag = a.isViolator
+        ? ` <span style="color:#ff6600;font-weight:bold;">[違規: ${a.violationType || '未明'}]</span>`
+        : '';
+      const compTag = a.companionGroupId ? ` <span style="color:#a78bfa;">[同行組#${a.companionGroupId}]</span>` : '';
+      const borderCol = a.isViolator ? '#ff6600' : '#f472b6';
+
+      listHtml += `
+        <div style="background: rgba(30,41,59,0.7); padding: 4px 6px; border-radius: 4px; margin-bottom: 4px; border-left: 3px solid ${borderCol}; font-size: 11px;">
+          <div style="display:flex; justify-content:space-between;">
+            <b>行人 [${a.id}]${compTag}</b>
+            <span style="color:#94a3b8;">${dist}m | ${spd} km/h</span>
+          </div>
+          <div>狀態: <b>${a.state}</b>${violTag}</div>
+        </div>
+      `;
+    }
+
+    const crossZebraRate = stats.crossingsTotal > 0
+      ? ((stats.crossingsOnZebra / stats.crossingsTotal) * 100).toFixed(1)
+      : '100.0';
+
+    const html = `
+      <div style="margin-bottom: 4px;"><b>活躍行人</b>：${stats.total}人 (走:${stats.walking} 停:${stats.idle} 等:${stats.waiting} 渡:${stats.crossing} 避:${stats.evading})</div>
+      <div style="margin-bottom: 4px;"><b>聚集比例</b>：<span style="color:${stats.crowdedRatePercent < 3.0 ? '#4ade80' : '#f59e0b'}; font-weight:bold;">${stats.crowdedRatePercent.toFixed(1)}%</span> (目標 &lt; 3%)</div>
+      <div style="margin-bottom: 4px;"><b>守規斑馬線率</b>：<span style="color:#4ade80; font-weight:bold;">${crossZebraRate}%</span> (目標 100%)</div>
+      <div style="margin-bottom: 4px;"><b>倒退走事件</b>：<span style="color:${stats.backwardsWalkCount === 0 ? '#4ade80' : '#ef4444'}; font-weight:bold;">${stats.backwardsWalkCount}次</span> (目標 0)</div>
+      <div style="margin-bottom: 4px;"><b>違規統計</b>：${stats.violationsCount.total}次 (${stats.violationRatePercent.toFixed(1)}%) (紅燈:${stats.violationsCount.jaywalkRed}, 無斑馬線:${stats.violationsCount.crossNoZebra}, 貼車道:${stats.violationsCount.walkRoadEdge})</div>
+      <div style="margin-bottom: 6px;"><b>AI 邏輯耗時</b>：${stats.aiTimeMs.toFixed(2)}ms (預算≤0.3ms) | <b>Draw Calls</b>：${stats.drawCalls}</div>
+      <div style="font-weight:700; color:#f472b6; margin-bottom:4px; border-top:1px solid rgba(148,163,184,0.2); padding-top:4px;">附近行人 (最近 5 人)：</div>
+      ${listHtml || '<div style="color:#94a3b8;">附近無行人</div>'}
+    `;
+
+    this.hud.updatePedestrianDebugContent(html);
+  }
+
+  /**
+   * 更新 F13 駕駛除錯面板 HTML 內容
+   */
+  private updateTrafficDebugPanel(stats: TrafficSystemStats, vehicles: TrafficVehicle[]): void {
+    const playerPos = { x: this.player.position.x, z: this.player.position.z };
+
+    // 抽樣報告即時更新
+    this.hud.updateTrafficSamplingReport(
+      this.trafficSystem.getVehicleSamplingReport(),
+      this.trafficSystem.getSamplingRemainingSec(),
+      this.trafficSystem.isSamplingActive()
+    );
+
+    const nearbyVehicles = [...vehicles]
+      .sort(
+        (a, b) =>
+          Math.hypot(a.x - playerPos.x, a.z - playerPos.z) -
+          Math.hypot(b.x - playerPos.x, b.z - playerPos.z)
+      )
+      .slice(0, 5);
+
+    let listHtml = '';
+    for (const v of nearbyVehicles) {
+      const dist = Math.hypot(v.x - playerPos.x, v.z - playerPos.z).toFixed(1);
+      const p = v.driver.personality;
+      const pZh =
+        p === 'cautious'
+          ? '謹慎'
+          : p === 'normal'
+          ? '一般'
+          : p === 'hurried'
+          ? '趕時間'
+          : p === 'slow'
+          ? '慢吞吞'
+          : '計程車';
+      const m = v.driver.mood;
+      const mZh = m === 'calm' ? '平靜 🟢' : m === 'annoyed' ? '煩躁 🟡' : '生氣 🔴';
+      const typeZh = v.type === 'taxi' ? '計程車' : v.type === 'scooter' ? '機車' : '轎車';
+      const passCount = v.driver.passengers.length;
+      const spd = (v.speed * 3.6).toFixed(0);
+      const honkTag = v.driver.isHonking
+        ? ' <span style="color:#ef4444;font-weight:bold;">[叭!]</span>'
+        : '';
+      const speechTag = v.driver.speechBubbleText
+        ? `<div style="color:#fde047;font-size:10px;">💬 "${v.driver.speechBubbleText}"</div>`
+        : '';
+      const taxiTag =
+        v.type === 'taxi'
+          ? ` (頂燈:${v.roofLightOn ? '亮' : '滅'}, 狀態:${v.taxiState})`
+          : '';
+      const violTag = v.isViolator
+        ? ` <span style="color:#ff6600;font-weight:bold;">[違規: ${v.violationType || '未明'}]</span>`
+        : '';
+
+      const borderCol = v.isViolator
+        ? '#ff6600'
+        : p === 'hurried'
+        ? '#ef4444'
+        : p === 'cautious'
+        ? '#38bdf8'
+        : p === 'taxi'
+        ? '#facc15'
+        : '#22c55e';
+
+      listHtml += `
+        <div style="background: rgba(30,41,59,0.7); padding: 4px 6px; border-radius: 4px; margin-bottom: 4px; border-left: 3px solid ${borderCol}; font-size: 11px;">
+          <div style="display:flex; justify-content:space-between;">
+            <b>${typeZh} [${v.id}]</b>
+            <span style="color:#94a3b8;">${dist}m | ${spd} km/h</span>
+          </div>
+          <div>個性: ${pZh} | 心情: ${mZh} (${v.driver.moodScore.toFixed(0)}分)${honkTag}${violTag}</div>
+          <div>狀態: ${v.state} | 乘客: ${passCount}人${taxiTag}</div>
+          ${speechTag}
+        </div>
+      `;
+    }
+
+    const html = `
+      <div style="margin-bottom: 4px;"><b>活躍車輛</b>：${stats.totalVehicles}輛 (轎:${stats.sedans} 計:${stats.taxis} 機:${stats.scooters}) | <b>乘客</b>：${stats.passengersCount}人</div>
+      <div style="margin-bottom: 4px;"><b>個性分佈</b>：謹慎:${stats.cautiousCount} 一般:${stats.normalCount} 趕時間:${stats.hurriedCount} 慢吞吞:${stats.slowCount} 計程車:${stats.taxiDriverCount}</div>
+      <div style="margin-bottom: 4px;"><b>心情指數</b>：平靜:${stats.calmMoodCount} 煩躁:${stats.annoyedMoodCount} 生氣:${stats.angryMoodCount} | <b>總鳴笛</b>：${stats.totalHonks}次</div>
+      <div style="margin-bottom: 4px;"><b>逆向事件</b>：<span style="color:${stats.wrongWayEvents === 0 ? '#4ade80' : '#ef4444'}; font-weight:bold;">${stats.wrongWayEvents}次</span> (目標 0) | <b>車頭反向</b>：<span style="color:${stats.headOppositeSpeedEvents === 0 ? '#4ade80' : '#ef4444'}; font-weight:bold;">${stats.headOppositeSpeedEvents}次</span> (目標 0)</div>
+      <div style="margin-bottom: 4px;"><b>違規統計</b>：${stats.violationsCount.total}次 (${stats.violationRatePercent.toFixed(1)}%) (搶燈:${stats.violationsCount.earlyRedRun}, 超速:${stats.violationsCount.speeding}, 壓線:${stats.violationsCount.pressCrosswalk}, 人行道:${stats.violationsCount.scooterSidewalk})</div>
+      <div style="margin-bottom: 6px;"><b>AI 邏輯耗時</b>：${stats.aiTimeMs.toFixed(2)}ms (預算≤0.3ms) | <b>Draw Calls</b>：${stats.drawCalls} (人物≤4)</div>
+      <div style="font-weight:700; color:#38bdf8; margin-bottom:4px; border-top:1px solid rgba(148,163,184,0.2); padding-top:4px;">附近車輛 (最近 5 輛)：</div>
+      ${listHtml || '<div style="color:#94a3b8;">附近無車輛</div>'}
+    `;
+    this.hud.updateTrafficDebugContent(html);
   }
 
   /**

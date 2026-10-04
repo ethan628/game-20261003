@@ -10,7 +10,7 @@
 
 import * as THREE from 'three';
 import { CONFIG } from '../config.ts';
-import { Point2D, RoadFeature } from '../geo/OsmTypes.ts';
+import { Point2D, RoadFeature, IntersectionFeature, StopLine, IntersectionCrossing } from '../geo/OsmTypes.ts';
 import { TextureGenerator } from './TextureGenerator.ts';
 
 export class RoadGenerator {
@@ -21,9 +21,63 @@ export class RoadGenerator {
   private gratesMesh: THREE.InstancedMesh | null = null;
 
   private roadMaterial: THREE.MeshStandardMaterial | null = null;
+  private sideMaterial: THREE.MeshStandardMaterial | null = null;
   private isWet = false;
+  private nightFactor = 0.0;
+  private groundVisibility = 1.0;
 
-  public generate(roads: RoadFeature[], scene: THREE.Scene): void {
+  private injectNightGroundShader(mat: THREE.MeshStandardMaterial): void {
+    mat.userData.nightUniforms = {
+      uNightFactor: { value: this.nightFactor },
+      uGroundVisibility: { value: this.groundVisibility },
+      uGroundNightBoost: { value: 0.075 } // 7.5% (符合 6~9% 白天強度)
+    };
+
+    mat.onBeforeCompile = (shader) => {
+      shader.uniforms.uNightFactor = mat.userData.nightUniforms.uNightFactor;
+      shader.uniforms.uGroundVisibility = mat.userData.nightUniforms.uGroundVisibility;
+      shader.uniforms.uGroundNightBoost = mat.userData.nightUniforms.uGroundNightBoost;
+
+      shader.fragmentShader = `
+        uniform float uNightFactor;
+        uniform float uGroundVisibility;
+        uniform float uGroundNightBoost;
+      ` + shader.fragmentShader;
+
+      shader.fragmentShader = shader.fragmentShader.replace(
+        '#include <dithering_fragment>',
+        `
+        #include <dithering_fragment>
+        // 純冷藍灰補光 (#3a4764)，白天強度的 6~9%，不染粉/橘
+        vec3 cGroundNight = vec3(0.227, 0.278, 0.392);
+        float boost = uGroundNightBoost * uNightFactor * uGroundVisibility;
+        gl_FragColor.rgb += cGroundNight * boost;
+        `
+      );
+    };
+  }
+
+  public setNightFactor(factor: number): void {
+    this.nightFactor = factor;
+    if (this.roadMaterial?.userData.nightUniforms) {
+      this.roadMaterial.userData.nightUniforms.uNightFactor.value = factor;
+    }
+    if (this.sideMaterial?.userData.nightUniforms) {
+      this.sideMaterial.userData.nightUniforms.uNightFactor.value = factor;
+    }
+  }
+
+  public setGroundVisibility(val: number): void {
+    this.groundVisibility = val;
+    if (this.roadMaterial?.userData.nightUniforms) {
+      this.roadMaterial.userData.nightUniforms.uGroundVisibility.value = val;
+    }
+    if (this.sideMaterial?.userData.nightUniforms) {
+      this.sideMaterial.userData.nightUniforms.uGroundVisibility.value = val;
+    }
+  }
+
+  public generate(roads: RoadFeature[], scene: THREE.Scene, intersections: IntersectionFeature[] = []): void {
     this.dispose(scene);
 
     if (roads.length === 0) return;
@@ -259,21 +313,24 @@ export class RoadGenerator {
           }
         }
 
-        // --- E. 路口斑馬線 (行人穿越道) ---
-        if (isWide && len > 22.0) {
-          if (i === 0) {
-            const cwCenter = { x: p1.x + ux * 4.0, z: p1.z + uz * 4.0 };
-            this.appendZebraCrossing(cwCenter, ux, uz, nx, nz, halfW - 0.3, markY, whiteColor, markPos, markNorm, markColors, markUvs, markIdx, () => markOffset, (v) => markOffset = v);
-          }
-          if (i === pts.length - 2) {
-            const cwCenter = { x: p2.x - ux * 4.0, z: p2.z - uz * 4.0 };
-            this.appendZebraCrossing(cwCenter, ux, uz, nx, nz, halfW - 0.3, markY, whiteColor, markPos, markNorm, markColors, markUvs, markIdx, () => markOffset, (v) => markOffset = v);
-          }
-        }
-
-        // --- F. 接合補丁 ---
+        // --- E. 接合補丁 ---
         if (i < pts.length - 2) {
           this.appendJointPatch(p2, halfW, roadY, roadPos, roadNorm, roadUvs, roadIdx, () => roadOffset, (v) => roadOffset = v);
+        }
+      }
+    }
+
+    // --- F. 單一資料來源：路口斑馬線、停止線與機慢車停等區 ---
+    for (const inter of intersections) {
+      // 1. 斑馬線 (行人穿越道)
+      for (const cross of (inter.crossings || [])) {
+        this.appendCrossingBars(cross, markY, whiteColor, markPos, markNorm, markColors, markUvs, markIdx, () => markOffset, (v) => markOffset = v);
+      }
+      // 2. 停止線與機慢車停等區
+      for (const stopLine of (inter.stopLines || [])) {
+        this.appendSolidStopLine(stopLine, markY, whiteColor, markPos, markNorm, markColors, markUvs, markIdx, () => markOffset, (v) => markOffset = v);
+        if (stopLine.hasScooterWaitingBox) {
+          this.appendScooterWaitingBox(stopLine, markY, whiteColor, markPos, markNorm, markColors, markUvs, markIdx, () => markOffset, (v) => markOffset = v);
         }
       }
     }
@@ -293,9 +350,10 @@ export class RoadGenerator {
         map: asphaltTex.map,
         normalMap: asphaltTex.normalMap,
         roughnessMap: asphaltTex.roughnessMap,
-        roughness: this.isWet ? 0.22 : 0.88,
-        metalness: this.isWet ? 0.35 : 0.08
+        roughness: this.isWet ? 0.28 : 0.88,
+        metalness: this.isWet ? 0.25 : 0.08
       });
+      this.injectNightGroundShader(this.roadMaterial);
 
       this.roadMesh = new THREE.Mesh(roadGeo, this.roadMaterial);
       this.roadMesh.receiveShadow = true;
@@ -322,6 +380,8 @@ export class RoadGenerator {
         roughness: 0.82,
         metalness: 0.05
       });
+      this.sideMaterial = sideMat;
+      this.injectNightGroundShader(this.sideMaterial);
 
       this.sidewalkMesh = new THREE.Mesh(sideGeo, sideMat);
       this.sidewalkMesh.receiveShadow = true;
@@ -409,9 +469,35 @@ export class RoadGenerator {
       this.roadMaterial.map = asphaltTex.map;
       this.roadMaterial.normalMap = asphaltTex.normalMap;
       this.roadMaterial.roughnessMap = asphaltTex.roughnessMap;
-      this.roadMaterial.roughness = wet ? 0.22 : 0.88;
-      this.roadMaterial.metalness = wet ? 0.35 : 0.08;
+      this.roadMaterial.roughness = wet ? 0.28 : 0.88;
+      this.roadMaterial.metalness = wet ? 0.25 : 0.08;
+      const baseCol = new THREE.Color(CONFIG.ROADS.ROAD_COLOR);
+      this.roadMaterial.color.copy(baseCol).multiplyScalar(wet ? 0.75 : 1.0);
       this.roadMaterial.needsUpdate = true;
+    }
+  }
+
+  /**
+   * 連續調節路面濕潤度 (由降雨與乾燥模型驅動)
+   */
+  public setWetness(wetness: number): void {
+    if (this.roadMaterial) {
+      const isCurrentlyWet = wetness > 0.3;
+      if (isCurrentlyWet !== this.isWet) {
+        this.isWet = isCurrentlyWet;
+        const asphaltTex = TextureGenerator.getAsphaltTextures(this.isWet);
+        this.roadMaterial.map = asphaltTex.map;
+        this.roadMaterial.normalMap = asphaltTex.normalMap;
+        this.roadMaterial.roughnessMap = asphaltTex.roughnessMap;
+      }
+      // 粗糙度下限嚴格保證 >= 0.28 (符合 >= 0.25 要求)
+      this.roadMaterial.roughness = THREE.MathUtils.lerp(0.88, 0.28, wetness);
+      this.roadMaterial.metalness = THREE.MathUtils.lerp(0.08, 0.25, wetness);
+
+      // 濕潤時最多變暗 25% (乘數 0.75 ~ 1.0)，不可全黑
+      const baseCol = new THREE.Color(CONFIG.ROADS.ROAD_COLOR);
+      const darkenMult = 1.0 - 0.25 * Math.min(1.0, Math.max(0.0, wetness));
+      this.roadMaterial.color.copy(baseCol).multiplyScalar(darkenMult);
     }
   }
 
@@ -485,32 +571,45 @@ export class RoadGenerator {
     }
   }
 
-  private appendZebraCrossing(
-    center: Point2D, ux: number, uz: number, nx: number, nz: number, halfRoadW: number,
-    y: number, color: THREE.Color, pos: number[], norm: number[], col: number[], uvs: number[], idx: number[],
-    getOffset: () => number, setOffset: (v: number) => void
+  private appendCrossingBars(
+    cross: IntersectionCrossing,
+    y: number,
+    color: THREE.Color,
+    pos: number[],
+    norm: number[],
+    col: number[],
+    uvs: number[],
+    idx: number[],
+    getOffset: () => number,
+    setOffset: (v: number) => void
   ): void {
-    const barWidth = 0.5;
-    const barGap = 0.5;
-    const crossingLength = 3.0;
-    const totalBars = Math.floor((halfRoadW * 2) / (barWidth + barGap));
-    let offset = -halfRoadW + (barWidth + barGap) * 0.5;
+    const forwardX = Math.sin(cross.azimuthRad);
+    const forwardZ = Math.cos(cross.azimuthRad);
+    const rightX = Math.cos(cross.azimuthRad);
+    const rightZ = -Math.sin(cross.azimuthRad);
+
+    const barWidth = 0.45;
+    const barGap = 0.45;
+    const crossingLength = cross.length || 3.0;
+    const hl = crossingLength * 0.5;
+    const hw = barWidth * 0.5;
+
+    const totalBars = Math.floor(cross.width / (barWidth + barGap));
+    let offset = -cross.width * 0.5 + (barWidth + barGap) * 0.5;
 
     for (let b = 0; b < totalBars; b++) {
       const vOffset = getOffset();
-      const cx = center.x + nx * offset;
-      const cz = center.z + nz * offset;
-      const hw = barWidth * 0.5;
-      const hl = crossingLength * 0.5;
+      const cx = cross.center.x + rightX * offset;
+      const cz = cross.center.z + rightZ * offset;
 
-      const p1x = cx - nx * hw - ux * hl;
-      const p1z = cz - nz * hw - uz * hl;
-      const p2x = cx + nx * hw - ux * hl;
-      const p2z = cz + nz * hw - uz * hl;
-      const p3x = cx + nx * hw + ux * hl;
-      const p3z = cz + nz * hw + uz * hl;
-      const p4x = cx - nx * hw + ux * hl;
-      const p4z = cz - nz * hw + uz * hl;
+      const p1x = cx - rightX * hw - forwardX * hl;
+      const p1z = cz - rightZ * hw - forwardZ * hl;
+      const p2x = cx + rightX * hw - forwardX * hl;
+      const p2z = cz + rightZ * hw - forwardZ * hl;
+      const p3x = cx + rightX * hw + forwardX * hl;
+      const p3z = cz + rightZ * hw + forwardZ * hl;
+      const p4x = cx - rightX * hw + forwardX * hl;
+      const p4z = cz - rightZ * hw + forwardZ * hl;
 
       pos.push(p1x, y, p1z, p2x, y, p2z, p3x, y, p3z, p4x, y, p4z);
       for (let k = 0; k < 4; k++) {
@@ -523,6 +622,212 @@ export class RoadGenerator {
 
       offset += barWidth + barGap;
     }
+  }
+
+  private appendSolidStopLine(
+    stopLine: StopLine,
+    y: number,
+    color: THREE.Color,
+    pos: number[],
+    norm: number[],
+    col: number[],
+    uvs: number[],
+    idx: number[],
+    getOffset: () => number,
+    setOffset: (v: number) => void
+  ): void {
+    const forwardX = Math.sin(stopLine.azimuthRad);
+    const forwardZ = Math.cos(stopLine.azimuthRad);
+    const lineWidth = CONFIG.TRAFFIC_SIGNALS.ROAD_MARKINGS.STOP_LINE_WIDTH || 0.40;
+    const hl = lineWidth * 0.5;
+
+    const vOffset = getOffset();
+    const p1 = stopLine.p1;
+    const p2 = stopLine.p2;
+
+    const p1x = p1.x - forwardX * hl;
+    const p1z = p1.z - forwardZ * hl;
+    const p2x = p2.x - forwardX * hl;
+    const p2z = p2.z - forwardZ * hl;
+    const p3x = p2.x + forwardX * hl;
+    const p3z = p2.z + forwardZ * hl;
+    const p4x = p1.x + forwardX * hl;
+    const p4z = p1.z + forwardZ * hl;
+
+    pos.push(p1x, y, p1z, p2x, y, p2z, p3x, y, p3z, p4x, y, p4z);
+    for (let k = 0; k < 4; k++) {
+      norm.push(0, 1, 0);
+      col.push(color.r, color.g, color.b);
+    }
+    uvs.push(0, 0, 1, 0, 1, 1, 0, 1);
+    idx.push(vOffset, vOffset + 1, vOffset + 2, vOffset, vOffset + 2, vOffset + 3);
+    setOffset(vOffset + 4);
+  }
+
+  private appendScooterWaitingBox(
+    stopLine: StopLine,
+    y: number,
+    whiteColor: THREE.Color,
+    pos: number[],
+    norm: number[],
+    col: number[],
+    uvs: number[],
+    idx: number[],
+    getOffset: () => number,
+    setOffset: (v: number) => void
+  ): void {
+    if (!stopLine.scooterStopWorldPosition || !stopLine.scooterBoxCenter) return;
+
+    const forwardX = Math.sin(stopLine.azimuthRad);
+    const forwardZ = Math.cos(stopLine.azimuthRad);
+    const rightX = Math.cos(stopLine.azimuthRad);
+    const rightZ = -Math.sin(stopLine.azimuthRad);
+
+    const laneHalfW = (stopLine.width || 3.5) * 0.5;
+    const borderWidth = 0.15;
+    const hb = borderWidth * 0.5;
+
+    const frontPos = stopLine.scooterStopWorldPosition;
+    const frontP1 = { x: frontPos.x - rightX * laneHalfW, z: frontPos.z - rightZ * laneHalfW };
+    const frontP2 = { x: frontPos.x + rightX * laneHalfW, z: frontPos.z + rightZ * laneHalfW };
+
+    // 1. 前端白實線 (機車停止線，寬 30cm)
+    const frontLineWidth = 0.30;
+    const hfl = frontLineWidth * 0.5;
+    let vOffset = getOffset();
+    pos.push(
+      frontP1.x - forwardX * hfl, y, frontP1.z - forwardZ * hfl,
+      frontP2.x - forwardX * hfl, y, frontP2.z - forwardZ * hfl,
+      frontP2.x + forwardX * hfl, y, frontP2.z + forwardZ * hfl,
+      frontP1.x + forwardX * hfl, y, frontP1.z + forwardZ * hfl
+    );
+    for (let k = 0; k < 4; k++) {
+      norm.push(0, 1, 0);
+      col.push(whiteColor.r, whiteColor.g, whiteColor.b);
+    }
+    uvs.push(0, 0, 1, 0, 1, 1, 0, 1);
+    idx.push(vOffset, vOffset + 1, vOffset + 2, vOffset, vOffset + 2, vOffset + 3);
+    setOffset(vOffset + 4);
+
+    // 2. 左側邊界線
+    const rearP1 = stopLine.p1;
+    vOffset = getOffset();
+    pos.push(
+      rearP1.x - rightX * hb, y, rearP1.z - rightZ * hb,
+      rearP1.x + rightX * hb, y, rearP1.z + rightZ * hb,
+      frontP1.x + rightX * hb, y, frontP1.z + rightZ * hb,
+      frontP1.x - rightX * hb, y, frontP1.z - rightZ * hb
+    );
+    for (let k = 0; k < 4; k++) {
+      norm.push(0, 1, 0);
+      col.push(whiteColor.r, whiteColor.g, whiteColor.b);
+    }
+    uvs.push(0, 0, 1, 0, 1, 1, 0, 1);
+    idx.push(vOffset, vOffset + 1, vOffset + 2, vOffset, vOffset + 2, vOffset + 3);
+    setOffset(vOffset + 4);
+
+    // 3. 右側邊界線
+    const rearP2 = stopLine.p2;
+    vOffset = getOffset();
+    pos.push(
+      rearP2.x - rightX * hb, y, rearP2.z - rightZ * hb,
+      rearP2.x + rightX * hb, y, rearP2.z + rightZ * hb,
+      frontP2.x + rightX * hb, y, frontP2.z + rightZ * hb,
+      frontP2.x - rightX * hb, y, frontP2.z - rightZ * hb
+    );
+    for (let k = 0; k < 4; k++) {
+      norm.push(0, 1, 0);
+      col.push(whiteColor.r, whiteColor.g, whiteColor.b);
+    }
+    uvs.push(0, 0, 1, 0, 1, 1, 0, 1);
+    idx.push(vOffset, vOffset + 1, vOffset + 2, vOffset, vOffset + 2, vOffset + 3);
+    setOffset(vOffset + 4);
+
+    // 4. 停等區內部淺色鋪面底色
+    const boxBgColor = new THREE.Color(0x384456);
+    vOffset = getOffset();
+    pos.push(
+      rearP1.x, y - 0.002, rearP1.z,
+      rearP2.x, y - 0.002, rearP2.z,
+      frontP2.x, y - 0.002, frontP2.z,
+      frontP1.x, y - 0.002, frontP1.z
+    );
+    for (let k = 0; k < 4; k++) {
+      norm.push(0, 1, 0);
+      col.push(boxBgColor.r, boxBgColor.g, boxBgColor.b);
+    }
+    uvs.push(0, 0, 1, 0, 1, 1, 0, 1);
+    idx.push(vOffset, vOffset + 1, vOffset + 2, vOffset, vOffset + 2, vOffset + 3);
+    setOffset(vOffset + 4);
+
+    // 5. 白色機車圖示
+    const bc = stopLine.scooterBoxCenter;
+    // 前輪
+    const fWheelC = { x: bc.x + forwardX * 0.45, z: bc.z + forwardZ * 0.45 };
+    vOffset = getOffset();
+    pos.push(
+      fWheelC.x - rightX * 0.08 - forwardX * 0.18, y + 0.001, fWheelC.z - rightZ * 0.08 - forwardZ * 0.18,
+      fWheelC.x + rightX * 0.08 - forwardX * 0.18, y + 0.001, fWheelC.z + rightZ * 0.08 - forwardZ * 0.18,
+      fWheelC.x + rightX * 0.08 + forwardX * 0.18, y + 0.001, fWheelC.z + rightZ * 0.08 + forwardZ * 0.18,
+      fWheelC.x - rightX * 0.08 + forwardX * 0.18, y + 0.001, fWheelC.z - rightZ * 0.08 + forwardZ * 0.18
+    );
+    for (let k = 0; k < 4; k++) {
+      norm.push(0, 1, 0);
+      col.push(whiteColor.r, whiteColor.g, whiteColor.b);
+    }
+    uvs.push(0, 0, 1, 0, 1, 1, 0, 1);
+    idx.push(vOffset, vOffset + 1, vOffset + 2, vOffset, vOffset + 2, vOffset + 3);
+    setOffset(vOffset + 4);
+
+    // 後輪
+    const rWheelC = { x: bc.x - forwardX * 0.45, z: bc.z - forwardZ * 0.45 };
+    vOffset = getOffset();
+    pos.push(
+      rWheelC.x - rightX * 0.08 - forwardX * 0.18, y + 0.001, rWheelC.z - rightZ * 0.08 - forwardZ * 0.18,
+      rWheelC.x + rightX * 0.08 - forwardX * 0.18, y + 0.001, rWheelC.z + rightZ * 0.08 - forwardZ * 0.18,
+      rWheelC.x + rightX * 0.08 + forwardX * 0.18, y + 0.001, rWheelC.z + rightZ * 0.08 + forwardZ * 0.18,
+      rWheelC.x - rightX * 0.08 + forwardX * 0.18, y + 0.001, rWheelC.z - rightZ * 0.08 + forwardZ * 0.18
+    );
+    for (let k = 0; k < 4; k++) {
+      norm.push(0, 1, 0);
+      col.push(whiteColor.r, whiteColor.g, whiteColor.b);
+    }
+    uvs.push(0, 0, 1, 0, 1, 1, 0, 1);
+    idx.push(vOffset, vOffset + 1, vOffset + 2, vOffset, vOffset + 2, vOffset + 3);
+    setOffset(vOffset + 4);
+
+    // 車身
+    vOffset = getOffset();
+    pos.push(
+      bc.x - rightX * 0.07 - forwardX * 0.40, y + 0.001, bc.z - rightZ * 0.07 - forwardZ * 0.40,
+      bc.x + rightX * 0.07 - forwardX * 0.40, y + 0.001, bc.z + rightZ * 0.07 - forwardZ * 0.40,
+      bc.x + rightX * 0.07 + forwardX * 0.40, y + 0.001, bc.z + rightZ * 0.07 + forwardZ * 0.40,
+      bc.x - rightX * 0.07 + forwardX * 0.40, y + 0.001, bc.z - rightZ * 0.07 + forwardZ * 0.40
+    );
+    for (let k = 0; k < 4; k++) {
+      norm.push(0, 1, 0);
+      col.push(whiteColor.r, whiteColor.g, whiteColor.b);
+    }
+    uvs.push(0, 0, 1, 0, 1, 1, 0, 1);
+    idx.push(vOffset, vOffset + 1, vOffset + 2, vOffset, vOffset + 2, vOffset + 3);
+    setOffset(vOffset + 4);
+
+    // 手把
+    const handleC = { x: bc.x + forwardX * 0.35, z: bc.z + forwardZ * 0.35 };
+    vOffset = getOffset();
+    pos.push(
+      handleC.x - rightX * 0.28 - forwardX * 0.06, y + 0.001, handleC.z - rightZ * 0.28 - forwardZ * 0.06,
+      handleC.x + rightX * 0.28 - forwardX * 0.06, y + 0.001, handleC.z + rightZ * 0.28 - forwardZ * 0.06,
+      handleC.x + rightX * 0.28 + forwardX * 0.06, y + 0.001, handleC.z + rightZ * 0.28 + forwardZ * 0.06,
+      handleC.x - rightX * 0.28 + forwardX * 0.06, y + 0.001, handleC.z - rightZ * 0.28 + forwardZ * 0.06
+    );
+    for (let k = 0; k < 4; k++) {
+      norm.push(0, 1, 0);
+      col.push(whiteColor.r, whiteColor.g, whiteColor.b);
+    }
+    uvs.push(0, 0, 1, 0, 1, 1, 0, 1);
+    idx.push(vOffset, vOffset + 1, vOffset + 2, vOffset, vOffset + 2, vOffset + 3);
+    setOffset(vOffset + 4);
   }
 
   private appendJointPatch(
@@ -549,6 +854,14 @@ export class RoadGenerator {
       roadIdx.push(centerRoadIdx, centerRoadIdx + s, centerRoadIdx + s + 1);
     }
     setRoadOffset(getRoadOffset() + segments + 2);
+  }
+
+  public getRoadMesh(): THREE.Mesh | null {
+    return this.roadMesh;
+  }
+
+  public getSidewalkMesh(): THREE.Mesh | null {
+    return this.sidewalkMesh;
   }
 
   public dispose(scene: THREE.Scene): void {
