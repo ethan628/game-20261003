@@ -34,6 +34,7 @@ export class TrafficSystem {
 
   private trafficSignalSystem: TrafficSignalSystem | null = null;
   private pedestrianSystem: PedestrianSystem | null = null;
+  private policeSystem: any = null;
 
   private eventListeners: Map<string, Set<TrafficEventCallback>> = new Map();
 
@@ -163,6 +164,10 @@ export class TrafficSystem {
 
   public setPedestrianSystem(sys: PedestrianSystem): void {
     this.pedestrianSystem = sys;
+  }
+
+  public setPoliceSystem(sys: any): void {
+    this.policeSystem = sys;
   }
 
   public getVehicles(): TrafficVehicle[] {
@@ -724,6 +729,110 @@ export class TrafficSystem {
       v.desiredQueueGap = CONFIG.TRAFFIC.BRAKING.QUEUE_GAP_MIN + Math.random() * (CONFIG.TRAFFIC.BRAKING.QUEUE_GAP_MAX - CONFIG.TRAFFIC.BRAKING.QUEUE_GAP_MIN);
     }
 
+    // A. 警察執法攔停與逃逸反應 (被警車鎖定目標)
+    if (v.state === 'PULLED_OVER') {
+      v.speed = 0;
+      v.targetSpeed = 0;
+      v.brakeLightsOn = true;
+      v.turnSignal = 'right';
+      if (v.type === 'scooter') d.footDown = true;
+      this.updateDriverPose(v, dt);
+      return;
+    }
+
+    if (v.targetedByPoliceId) {
+      if (v.isFleeing === undefined) {
+        v.isFleeing = Math.random() < CONFIG.POLICE.FLEE_RATE; // 8% 逃跑，92% 配合
+      }
+
+      if (v.isFleeing) {
+        // 逃逸中：加速至 1.3 倍速限
+        v.state = 'FLEEING';
+        v.targetSpeed = CONFIG.TRAFFIC.MAX_SPEED_MPS * 1.3;
+        v.brakeLightsOn = false;
+        v.turnSignal = 'none';
+      } else {
+        // 配合靠邊停靠 (打右方向燈，向右側路肩減速靠停)
+        v.state = 'PULLING_OVER';
+        v.turnSignal = 'right';
+        v.targetSpeed = 0;
+        v.laneOffset = Math.min(2.4, Math.abs(v.laneOffset) + 0.6);
+        v.brakeLightsOn = true;
+
+        if (v.speed <= 0.15) {
+          v.speed = 0;
+          v.state = 'PULLED_OVER';
+          if (v.type === 'scooter') d.footDown = true;
+        }
+        this.updateDriverPose(v, dt);
+        return;
+      }
+    }
+
+    // B. 警車鳴笛讓道行為 (台灣特色摩西分海：前方 80m 同向靠右停等、對向減速靠右、通過 3s 後依序起步)
+    if (this.policeSystem && !v.targetedByPoliceId && v.state !== 'FLEEING') {
+      const sirens = this.policeSystem.getActiveSirenPositions?.() || [];
+      let sirenNearby = false;
+
+      for (const s of sirens) {
+        const dx = v.x - s.x;
+        const dz = v.z - s.z;
+        const distToSiren = Math.hypot(dx, dz);
+
+        if (distToSiren <= CONFIG.POLICE.YIELD_SIREN_DISTANCE) {
+          const fwdFromSiren = dx * Math.sin(s.heading) + dz * Math.cos(s.heading);
+          const dotHead = Math.sin(v.rotationY) * Math.sin(s.heading) + Math.cos(v.rotationY) * Math.cos(s.heading);
+
+          if (fwdFromSiren > -5.0) {
+            // 警車在後方接近中
+            sirenNearby = true;
+            if (dotHead > 0.3) {
+              // 同向前方車輛：打右方向燈、向右靠、停下讓出車道中央
+              v.state = 'YIELDING_SIREN';
+              v.turnSignal = 'right';
+              v.laneOffset = Math.min(2.2, Math.abs(v.laneOffset) + 0.7);
+              v.targetSpeed = 0;
+              v.brakeLightsOn = true;
+              v.yieldResumeTimer = undefined;
+              break;
+            } else if (dotHead < -0.3) {
+              // 對向車輛：減速靠右，不完全停下
+              v.targetSpeed = Math.min(v.targetSpeed, 3.5);
+              v.laneOffset = Math.min(2.0, Math.abs(v.laneOffset) + 0.4);
+            }
+          } else if (fwdFromSiren < -20.0 && v.state === 'YIELDING_SIREN') {
+            // 警車已通過超過 20 公尺，啟動依序起步延遲 (3 秒 + 隨機)
+            if (v.yieldResumeTimer === undefined) {
+              v.yieldResumeTimer = CONFIG.POLICE.YIELD_RESUME_DELAY_SEC + Math.random() * 1.5;
+            }
+          }
+        }
+      }
+
+      if (v.state === 'YIELDING_SIREN') {
+        if (!sirenNearby && v.yieldResumeTimer === undefined) {
+          v.yieldResumeTimer = CONFIG.POLICE.YIELD_RESUME_DELAY_SEC + Math.random() * 1.0;
+        }
+
+        if (v.yieldResumeTimer !== undefined) {
+          v.yieldResumeTimer -= dt;
+          if (v.yieldResumeTimer <= 0) {
+            v.state = 'DRIVING';
+            v.turnSignal = 'none';
+            v.yieldResumeTimer = undefined;
+          } else {
+            v.targetSpeed = 0;
+            v.brakeLightsOn = true;
+            this.updateDriverPose(v, dt);
+            return;
+          }
+        } else {
+          this.updateDriverPose(v, dt);
+          return;
+        }
+      }
+    }
+
     // 1. 單一資料來源：尋找車輛面對之號誌進路與停止線
     const targetInfo = this.findTargetApproachAndStopLine(v);
     let mustStopAtSignal = false;
@@ -742,6 +851,16 @@ export class TrafficSystem {
       const stopNeedDist = (v.speed * v.speed) / (2 * aComf);
 
       if (state === 'red') {
+        // 自然違規產生：趕時間或憤怒型駕駛在剛轉紅燈 (1.5s 內) 且距離路口 < 12m 時有機率搶紅燈
+        if (!v.isViolator && (pCfg.id === 'hurried' || d.mood === 'angry') && longitudinalDist < 12.0) {
+          const isEarlyRed = sigInfo.remainingSec >= 28.5 || sigInfo.remainingSec <= 1.5;
+          if (isEarlyRed && Math.random() < 0.08) {
+            v.isViolator = true;
+            v.violationType = 'early_red_run';
+            v.violationTimer = 0;
+          }
+        }
+
         // 違規：搶紅燈 (紅燈初期 1.5s 內搶過)
         if (v.isViolator && v.violationType === 'early_red_run') {
           // 紅燈初期搶過
@@ -789,6 +908,15 @@ export class TrafficSystem {
         }
       }
 
+      // 自然違規產生：停等紅燈時壓斑馬線 (台灣常見：停等超出停止線壓上斑馬線)
+      if (mustStopAtSignal && !v.isViolator && (pCfg.id === 'hurried' || d.mood === 'angry') && distToStopLine < 2.5 && d.waitTimer > 3.0) {
+        if (Math.random() < 0.003 * dt * 60) {
+          v.isViolator = true;
+          v.violationType = 'press_crosswalk';
+          v.violationTimer = 0;
+        }
+      }
+
       // 違規：壓斑馬線 (停等時壓線 0.5m)
       if (v.isViolator && v.violationType === 'press_crosswalk' && mustStopAtSignal) {
         v.desiredStopGap = -0.5;
@@ -810,6 +938,15 @@ export class TrafficSystem {
     const vHalfLen = v.type === 'scooter' ? CONFIG.TRAFFIC.DIMENSIONS.SCOOTER_HALF_LEN : CONFIG.TRAFFIC.DIMENSIONS.SEDAN_HALF_LEN;
     let closestLeadVehicle: TrafficVehicle | null = null;
     let closestLeadBumperGap = Infinity;
+
+    // 自然違規產生：機車停滯時騎上人行道
+    if (v.type === 'scooter' && !v.isViolator && (pCfg.id === 'hurried' || d.mood === 'angry') && d.waitTimer > 4.0) {
+      if (Math.random() < 0.003 * dt * 60) {
+        v.isViolator = true;
+        v.violationType = 'scooter_sidewalk';
+        v.violationTimer = 0;
+      }
+    }
 
     // 違規：機車騎上人行道短暫繞行
     if (v.type === 'scooter' && v.isViolator && v.violationType === 'scooter_sidewalk') {
@@ -1001,7 +1138,26 @@ export class TrafficSystem {
       // 正常順暢行駛
       v.state = 'DRIVING';
       v.isLeadStoppedVehicle = false;
-      v.targetSpeed = cruiseSpeed;
+
+      // 自然違規產生：空曠路段超速 (>25%)
+      if (!v.isViolator && (pCfg.id === 'hurried' || d.mood === 'angry') && v.speed > 7.0 && !closestLeadVehicle) {
+        if (Math.random() < 0.0015 * dt * 60) {
+          v.isViolator = true;
+          v.violationType = 'speeding';
+          v.violationTimer = 1;
+          this.vehicleViolationsStats.speeding++;
+          this.vehicleViolationsStats.total++;
+          window.dispatchEvent(new CustomEvent('violation:committed', {
+            detail: { actorType: 'vehicle', id: v.id, violationType: 'speeding', position: { x: v.x, z: v.z }, timestamp: Date.now() }
+          }));
+        }
+      }
+
+      if (v.isViolator && v.violationType === 'speeding') {
+        v.targetSpeed = 16.0;
+      } else {
+        v.targetSpeed = cruiseSpeed;
+      }
       v.brakeLightsOn = false;
       d.waitTimer = Math.max(0, d.waitTimer - dt * 2.0);
       d.footDown = false;
@@ -1755,5 +1911,81 @@ export class TrafficSystem {
 
   public isAllRed(): boolean {
     return this.trafficSignalSystem ? this.trafficSignalSystem.getIsAllRed() : false;
+  }
+
+  /**
+   * 強制最近車輛搶紅燈 (F15 測試按鈕)
+   */
+  public forceNearestVehicleRedRun(playerPos: Point2D): boolean {
+    const activeVehicles = this.vehicles.filter((v) => v.active);
+    let bestDist = Infinity;
+    let target: TrafficVehicle | null = null;
+    for (const v of activeVehicles) {
+      const d = Math.hypot(v.x - playerPos.x, v.z - playerPos.z);
+      if (d < bestDist && d < 120.0) {
+        bestDist = d;
+        target = v;
+      }
+    }
+    if (!target) return false;
+
+    target.isViolator = true;
+    target.violationType = 'early_red_run';
+    target.violationTimer = 1;
+    target.speed = Math.max(target.speed, 8.5);
+    target.targetSpeed = 12.0;
+    this.vehicleViolationsStats.earlyRedRun++;
+    this.vehicleViolationsStats.total++;
+
+    window.dispatchEvent(
+      new CustomEvent('violation:committed', {
+        detail: {
+          actorType: 'vehicle',
+          id: target.id,
+          violationType: 'early_red_run',
+          position: { x: target.x, z: target.z },
+          timestamp: Date.now()
+        }
+      })
+    );
+    return true;
+  }
+
+  /**
+   * 強制最近車輛超速 (F15 測試按鈕)
+   */
+  public forceNearestVehicleSpeeding(playerPos: Point2D): boolean {
+    const activeVehicles = this.vehicles.filter((v) => v.active);
+    let bestDist = Infinity;
+    let target: TrafficVehicle | null = null;
+    for (const v of activeVehicles) {
+      const d = Math.hypot(v.x - playerPos.x, v.z - playerPos.z);
+      if (d < bestDist && d < 120.0) {
+        bestDist = d;
+        target = v;
+      }
+    }
+    if (!target) return false;
+
+    target.isViolator = true;
+    target.violationType = 'speeding';
+    target.violationTimer = 1;
+    target.speed = 16.0;
+    target.targetSpeed = 20.0;
+    this.vehicleViolationsStats.speeding++;
+    this.vehicleViolationsStats.total++;
+
+    window.dispatchEvent(
+      new CustomEvent('violation:committed', {
+        detail: {
+          actorType: 'vehicle',
+          id: target.id,
+          violationType: 'speeding',
+          position: { x: target.x, z: target.z },
+          timestamp: Date.now()
+        }
+      })
+    );
+    return true;
   }
 }

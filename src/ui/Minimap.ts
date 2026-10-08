@@ -20,6 +20,7 @@ export type MinimapSizePreset = 'normal' | 'compact' | 'large' | 'xlarge' | 'cus
 
 export class Minimap {
   private pedSystem: PedestrianSystem | null = null;
+  private policeSystem: any = null;
   private container: HTMLElement;
   private headerBar: HTMLElement;
   private canvasBox: HTMLElement;
@@ -643,6 +644,11 @@ export class Minimap {
       this.renderPedestrians(ctx, cx, cy, logicalW, logicalH, scale, centerWorldX, centerWorldZ);
     }
 
+    // 4.6 繪製警車標記 (藍紅交替閃爍圖示，按 config 開關)
+    if (CONFIG.POLICE.SHOW_ON_MAP && this.policeSystem) {
+      this.renderPoliceCars(ctx, cx, cy, logicalW, logicalH, scale, centerWorldX, centerWorldZ);
+    }
+
     // 5. 繪製 POI 標記 (相對於 centerWorld)
     this.renderBlips(ctx, cx, cy, logicalW, logicalH, scale, centerWorldX, centerWorldZ);
 
@@ -657,6 +663,72 @@ export class Minimap {
 
   public setPedestrianSystem(pedSystem: PedestrianSystem): void {
     this.pedSystem = pedSystem;
+  }
+
+  public setPoliceSystem(policeSystem: any): void {
+    this.policeSystem = policeSystem;
+  }
+
+  /**
+   * 繪製警車標記 (藍紅交替閃爍圖示)
+   */
+  private renderPoliceCars(
+    ctx: CanvasRenderingContext2D,
+    cx: number,
+    cy: number,
+    w: number,
+    h: number,
+    scale: number,
+    centerX: number,
+    centerZ: number
+  ): void {
+    if (!this.policeSystem) return;
+    const cars = this.policeSystem.getVehicles();
+    const maxRadiusPx = Math.min(w, h) * 0.46;
+    const isRed = Math.sin(performance.now() * 0.016) > 0;
+
+    for (let i = 0; i < cars.length; i++) {
+      const c = cars[i];
+      if (!c.active) continue;
+
+      const dx = c.x - centerX;
+      const dz = c.z - centerZ;
+
+      let screenX = dx;
+      let screenY = dz;
+
+      if (this.followPlayerYaw) {
+        const cos = Math.cos(this.cameraYaw);
+        const sin = Math.sin(this.cameraYaw);
+        screenX = dx * cos - dz * sin;
+        screenY = dx * sin + dz * cos;
+      }
+
+      screenX *= scale;
+      screenY *= scale;
+
+      const distFromCenter = Math.hypot(screenX, screenY);
+      if (distFromCenter > maxRadiusPx) continue;
+
+      const px = cx + screenX;
+      const py = cy + screenY;
+
+      // 繪製藍紅交替閃爍警車圓形圖標
+      ctx.beginPath();
+      ctx.arc(px, py, 5, 0, Math.PI * 2);
+      ctx.fillStyle = isRed ? '#ef4444' : '#2563eb';
+      ctx.fill();
+      ctx.lineWidth = 1.5;
+      ctx.strokeStyle = '#ffffff';
+      ctx.stroke();
+
+      // 小 P 字標記
+      ctx.font = 'bold 7px sans-serif';
+      ctx.fillStyle = '#ffffff';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('P', px, py);
+    }
   }
 
   /**

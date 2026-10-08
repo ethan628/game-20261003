@@ -21,6 +21,7 @@ export class HUD {
   private pedStatsEl: HTMLDivElement;
   private signalStatsEl: HTMLDivElement;
   private trafficStatsEl: HTMLDivElement;
+  private policeStatsEl: HTMLDivElement;
   private qualityValEl: HTMLSpanElement;
   private wetBtn: HTMLElement | null = null;
   private nightBtn: HTMLElement | null = null;
@@ -78,6 +79,7 @@ export class HUD {
             <div id="hud-pedestrian-stats" style="color: #f472b6; margin-top: 2px; font-weight: 500;">行人: 0 (走:0 停:0 等:0 渡:0 避:0) | AI: 0.00ms | Calls: 4</div>
             <div id="hud-signal-stats" style="color: #34d399; margin-top: 2px; font-weight: 500;">交通號誌: 0 路口 (OSM:0 自:0) | 邏輯: 0.00ms | Calls: 6</div>
             <div id="hud-traffic-stats" style="color: #38bdf8; margin-top: 2px; font-weight: 500;">車輛駕駛: 0 (轎:0 計:0 機:0 | 乘:0) | 謹:0 常:0 急:0 慢:0 | 叭:0 | AI: 0.00ms | Calls: 6</div>
+            <div id="hud-police-stats" style="color: #60a5fa; margin-top: 2px; font-weight: 500;">警車執法: 0 輛 (巡:0 追:0 罰:0) | 違規: 0 | AI: 0.00ms | Calls: 4</div>
             <div id="hud-map-stats" style="color: #67e8f9; margin-top: 2px; font-weight: 500;">自繪地圖: 0.0ms | 標記: 0</div>
           </div>
         </div>
@@ -192,6 +194,7 @@ export class HUD {
         <div class="hint-pill" id="btn-toggle-night-analysis" title="切換夜景分區亮度分析面板 (F12)"><b>F12</b> 夜景分析</div>
         <div class="hint-pill highlight" id="btn-toggle-traffic-debug" title="切換車輛與駕駛除錯視覺化 (F13)"><b>F13</b> 駕駛除錯</div>
         <div class="hint-pill highlight" id="btn-toggle-stopline-measurement" title="切換停止線量測面板 (F14 / Shift+F2)"><b>F14</b> 停止線量測</div>
+        <div class="hint-pill highlight" id="btn-toggle-police-debug" title="切換警察執法除錯面板 (F15 / Shift+\`)"><b>F15</b> 警察執法</div>
         <div class="hint-pill" id="btn-export-estimated" title="匯出待校正推測建築清單 JSON"><b>匯出</b>推測清單</div>
         <div class="hint-pill" id="btn-toggle-wet" title="切換濕潤路面 (R)"><b>R</b> 濕潤路面</div>
         <div class="hint-pill" id="btn-toggle-night" title="切換夜間霓虹 (T)"><b>T</b> 夜間霓虹</div>
@@ -215,6 +218,7 @@ export class HUD {
     this.pedStatsEl = this.container.querySelector('#hud-pedestrian-stats')!;
     this.signalStatsEl = this.container.querySelector('#hud-signal-stats')!;
     this.trafficStatsEl = this.container.querySelector('#hud-traffic-stats')!;
+    this.policeStatsEl = this.container.querySelector('#hud-police-stats')!;
     this.qualityValEl = this.container.querySelector('#hud-quality-val')!;
     this.wetBtn = this.container.querySelector('#btn-toggle-wet');
     this.nightBtn = this.container.querySelector('#btn-toggle-night');
@@ -604,6 +608,19 @@ export class HUD {
     if (this.trafficStatsEl) {
       this.trafficStatsEl.textContent = `車輛駕駛: ${stats.totalVehicles} (轎:${stats.sedans} 計:${stats.taxis} 機:${stats.scooters} | 乘:${stats.passengersCount}) | 謹:${stats.cautiousCount} 常:${stats.normalCount} 急:${stats.hurriedCount} 慢:${stats.slowCount} | 逆:${stats.wrongWayEvents} | 規:${stats.violationsCount.total}(${stats.violationRatePercent.toFixed(1)}%) | 叭:${stats.totalHonks} | AI: ${stats.aiTimeMs.toFixed(2)}ms | Calls: ${stats.drawCalls}`;
     }
+  }
+
+  public updatePoliceStats(
+    stats: { activeCars: number; patrollingCars: number; activePursuits: number; totalCitations: number; aiTimeMs: number; totalViolations: number },
+    drawCalls: number
+  ): void {
+    if (this.policeStatsEl) {
+      this.policeStatsEl.textContent = `警車執法: ${stats.activeCars} 輛 (巡:${stats.patrollingCars} 追:${stats.activePursuits} 罰:${stats.totalCitations}) | 違規: ${stats.totalViolations} | AI: ${stats.aiTimeMs.toFixed(2)}ms | Calls: ${drawCalls}`;
+    }
+  }
+
+  public onPoliceDebugClick(handler: () => void): void {
+    this.container.querySelector('#btn-toggle-police-debug')?.addEventListener('click', handler);
   }
 
   public updateTrafficSamplingReport(

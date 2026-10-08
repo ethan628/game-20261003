@@ -49,6 +49,9 @@ import { TrafficSystem } from './systems/traffic/TrafficSystem.ts';
 import { TrafficVehicleRenderer } from './world/TrafficVehicleRenderer.ts';
 import { TrafficDebugVisualizer } from './world/TrafficDebugVisualizer.ts';
 import { TrafficVehicle, TrafficSystemStats } from './geo/TrafficTypes.ts';
+import { PoliceSystem } from './systems/police/PoliceSystem.ts';
+import { PoliceRenderer } from './world/PoliceRenderer.ts';
+import { PoliceDebugVisualizer } from './world/PoliceDebugVisualizer.ts';
 
 class GameApp {
   public engine: GameEngine;
@@ -83,6 +86,11 @@ class GameApp {
   public trafficSystem: TrafficSystem;
   public trafficVehicleRenderer: TrafficVehicleRenderer;
   public trafficDebugVisualizer: TrafficDebugVisualizer;
+
+  // 警察執法系統
+  public policeSystem: PoliceSystem;
+  public policeRenderer: PoliceRenderer;
+  public policeDebugVisualizer: PoliceDebugVisualizer;
 
   // 天氣、時間與夜景假光系統
   public timeSystem: TimeSystem;
@@ -159,6 +167,19 @@ class GameApp {
     this.trafficSystem.setTrafficSignalSystem(this.trafficSignalSystem);
     this.trafficSystem.setPedestrianSystem(this.pedestrianSystem);
 
+    this.policeSystem = new PoliceSystem();
+    this.policeRenderer = new PoliceRenderer(this.engine.scene);
+    this.policeDebugVisualizer = new PoliceDebugVisualizer(
+      this.engine.scene,
+      this.policeSystem,
+      this.trafficSystem,
+      this.pedestrianSystem
+    );
+    this.trafficSystem.setPoliceSystem(this.policeSystem);
+    this.pedestrianSystem.setPoliceSystem(this.policeSystem);
+    this.minimap.setPoliceSystem(this.policeSystem);
+    this.fullscreenMap.setPoliceSystem(this.policeSystem);
+
     this.mapillaryService = new MapillaryService();
     this.streetViewWindow = new StreetViewWindow(this.input, this.mapillaryService);
     this.streetViewWindow.onSplitChange(() => {
@@ -187,6 +208,8 @@ class GameApp {
       this.worldManager.getBuildingGenerator(),
       this.worldManager.getRoadGenerator()
     );
+    this.nightLightingSystem.setTerrainFeatureGenerator(this.worldManager.getTerrainFeatureGenerator());
+    this.nightLightingSystem.setEnvironmentGenerator(this.worldManager.getEnvironmentGenerator());
     this.weatherModal = new WeatherModal(
       this.timeSystem,
       this.weatherSystem,
@@ -241,6 +264,7 @@ class GameApp {
     // 6. 啟動遊戲迴圈
     this.gameLoop.start();
     (window as any).__game = this;
+    (window as any).game = this;
     (window as any).THREE = THREE;
 
     // 7. 啟動檢測：若 URL 帶有 ?auto=1，自動進入世界並設定視角
@@ -631,6 +655,16 @@ class GameApp {
       this.hud.showNotification('🔄 已重新整理停止線量測數據');
     });
 
+    // 按 F15 / Shift+` 或點擊 HUD 切換警察執法除錯面板
+    const handleTogglePoliceDebug = () => {
+      const isVisible = this.policeDebugVisualizer.toggle();
+      this.hud.showNotification(
+        isVisible ? '🚔 警察執法除錯面板開啟 (F15 / Shift+\`)' : '🚔 警察執法除錯面板已關閉'
+      );
+    };
+    this.input.onTogglePoliceDebug = handleTogglePoliceDebug;
+    this.hud.onPoliceDebugClick(handleTogglePoliceDebug);
+
     // 按 R 鍵切換濕潤路面 (雨後微光反光模式)
     const handleToggleWet = () => {
       const isWet = this.worldManager.toggleWetMode();
@@ -774,6 +808,8 @@ class GameApp {
       this.weatherSystem.setCoordinates(lat, lon);
       this.weatherRenderer.setRoadGenerator(this.worldManager.getRoadGenerator());
       this.weatherRenderer.setTerrainFeatureGenerator(this.worldManager.getTerrainFeatureGenerator());
+      this.nightLightingSystem.setTerrainFeatureGenerator(this.worldManager.getTerrainFeatureGenerator());
+      this.nightLightingSystem.setEnvironmentGenerator(this.worldManager.getEnvironmentGenerator());
 
       // 更新 HUD 招牌即時數據
       const signboardStats = this.worldManager.getSignboardStats();
@@ -834,6 +870,12 @@ class GameApp {
       // 初始化 NPC 交通車流與駕駛系統
       this.trafficSystem.setRoadsAndIntersections(data.roads, intersections);
 
+      // 初始化警察執法系統
+      this.policeSystem.setRoads(data.roads);
+      this.policeSystem.setIntersections(intersections);
+      this.policeSystem.setTrafficSignalSystem(this.trafficSignalSystem);
+      this.policeSystem.setBuildingColliders(this.worldManager.getBuildingColliders());
+
       // 若街景視窗開啟中，同步更新街景位置
       if (this.streetViewWindow.getIsVisible()) {
         this.streetViewWindow.updateLocation(lat, lon, 0, true);
@@ -871,6 +913,8 @@ class GameApp {
           this.weatherSystem.setCoordinates(lat, lon);
           this.weatherRenderer.setRoadGenerator(this.worldManager.getRoadGenerator());
           this.weatherRenderer.setTerrainFeatureGenerator(this.worldManager.getTerrainFeatureGenerator());
+          this.nightLightingSystem.setTerrainFeatureGenerator(this.worldManager.getTerrainFeatureGenerator());
+          this.nightLightingSystem.setEnvironmentGenerator(this.worldManager.getEnvironmentGenerator());
           const fallbackStats = this.worldManager.getSignboardStats();
           if (fallbackStats) {
             this.hud.updateSignboardStats(fallbackStats);
@@ -905,6 +949,10 @@ class GameApp {
           this.trafficDebugVisualizer.setIntersections(fallbackInters);
           this.blipManager.populateTrafficSignals(fallbackInters);
           this.trafficSystem.setRoadsAndIntersections(fallbackData.roads, fallbackInters);
+          this.policeSystem.setRoads(fallbackData.roads);
+          this.policeSystem.setIntersections(fallbackInters);
+          this.policeSystem.setTrafficSignalSystem(this.trafficSignalSystem);
+          this.policeSystem.setBuildingColliders(this.worldManager.getBuildingColliders());
 
           let fallbackPedNetwork = fallbackData.pedestrianNetwork;
           if (!fallbackPedNetwork) {
@@ -1234,6 +1282,20 @@ class GameApp {
     if (this.hud.isStopLineMeasurementVisible) {
       this.hud.updateStopLineMeasurement(this.trafficSystem.getStopLineMeasurements(), this.trafficSystem.isAllRed());
     }
+
+    // 更新警察執法系統 (巡邏、偵測違規、追捕、攔截、開罰)
+    const activePedestrians = this.pedestrianSystem.getAllAgents().filter((a) => a.active);
+    this.policeSystem.update(
+      fixedDelta,
+      activeVehicles,
+      activePedestrians,
+      playerPos,
+      isRaining,
+      timeInfo.hourFraction
+    );
+    this.policeRenderer.update(this.policeSystem.getVehicles(), fixedDelta);
+    this.policeDebugVisualizer.update(fixedDelta, playerPos);
+    this.hud.updatePoliceStats(this.policeSystem.getStats(), 4);
 
     this.perfStats.mapMs = this.minimap.getDrawTimeMs();
 

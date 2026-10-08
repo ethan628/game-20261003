@@ -109,6 +109,7 @@ export class PedestrianSystem {
   private trafficTimer = 0;
   private isCrosswalkGreen = true;
   private trafficSignalSystem: TrafficSignalSystem | null = null;
+  private policeSystem: any = null;
 
   // 時間切片更新 (每幀更新 1/2)
   private sliceIndex = 0;
@@ -742,6 +743,28 @@ export class PedestrianSystem {
     if (agent.insideBuildingTimer > 0) {
       agent.insideBuildingTimer -= dt;
       return;
+    }
+
+    // 警車鳴笛讓道反應 (過街加快腳步通過，不可停在馬路中央；人行道停步張望)
+    if (this.policeSystem) {
+      const sirens = this.policeSystem.getActiveSirenPositions?.() || [];
+      for (const s of sirens) {
+        const dSiren = Math.hypot(agent.x - s.x, agent.z - s.z);
+        if (dSiren < CONFIG.POLICE.YIELD_SIREN_DISTANCE) {
+          if (agent.state === PedestrianState.CROSSING) {
+            agent.targetSpeed = 2.2; // 加快腳步通過
+            return;
+          } else if (agent.state === PedestrianState.WALKING) {
+            agent.targetSpeed = 0;
+            agent.state = PedestrianState.IDLE;
+            agent.stateTimer = 2.0;
+            const dx = s.x - agent.x;
+            const dz = s.z - agent.z;
+            agent.rotationY = Math.atan2(dx, dz);
+            return;
+          }
+        }
+      }
     }
 
     // 狀態機邏輯
@@ -1436,5 +1459,47 @@ export class PedestrianSystem {
 
   public getIsCrosswalkGreen(): boolean {
     return this.isCrosswalkGreen;
+  }
+
+  public setPoliceSystem(sys: any): void {
+    this.policeSystem = sys;
+  }
+
+  /**
+   * 強制最近行人違規闖紅燈/過街 (F15 測試按鈕)
+   */
+  public forceNearestPedJaywalk(playerPos: Point2D): boolean {
+    const activeAgents = this.agents.filter((a) => a.active);
+    let bestDist = Infinity;
+    let target: PedestrianAgent | null = null;
+    for (const a of activeAgents) {
+      const d = Math.hypot(a.x - playerPos.x, a.z - playerPos.z);
+      if (d < bestDist && d < 100.0) {
+        bestDist = d;
+        target = a;
+      }
+    }
+    if (!target) return false;
+
+    target.isViolator = true;
+    target.violationType = 'jaywalk_red_light';
+    target.violationTimer = 1;
+    target.state = PedestrianState.CROSSING;
+    target.targetSpeed = 1.35;
+    this.pedestrianViolationsStats.jaywalkRed++;
+    this.pedestrianViolationsStats.total++;
+
+    window.dispatchEvent(
+      new CustomEvent('violation:committed', {
+        detail: {
+          actorType: 'pedestrian',
+          id: target.id,
+          violationType: 'jaywalk_red_light',
+          position: { x: target.x, z: target.z },
+          timestamp: Date.now()
+        }
+      })
+    );
+    return true;
   }
 }

@@ -26,6 +26,7 @@ export class FullscreenMap {
   private tileRenderer: MapTileRenderer;
   private navSystem: NavigationSystem;
   private inputManager: InputManager;
+  private policeSystem: any = null;
 
   private isOpen = false;
   private playerPos: Point2D = { x: 0, z: 0 };
@@ -689,10 +690,58 @@ export class FullscreenMap {
       ctx.restore();
     }
 
+    // 6.5 繪製警車標記 (藍紅交替閃爍)
+    if (CONFIG.POLICE.SHOW_ON_MAP && this.policeSystem) {
+      this.renderPoliceCars(ctx);
+    }
+
     // 7. 繪製玩家目前位置圖釘與視角錐
     this.renderPlayerMarker(ctx);
 
     ctx.restore();
+  }
+
+  public setPoliceSystem(sys: any): void {
+    this.policeSystem = sys;
+  }
+
+  /**
+   * 繪製警車標記 (全螢幕地圖藍紅交替閃爍圖示)
+   */
+  private renderPoliceCars(ctx: CanvasRenderingContext2D): void {
+    if (!this.policeSystem) return;
+    const cars = this.policeSystem.getVehicles();
+    const isRed = Math.sin(performance.now() * 0.016) > 0;
+
+    for (let i = 0; i < cars.length; i++) {
+      const c = cars[i];
+      if (!c.active) continue;
+
+      const sp = this.worldToScreen(c.x, c.z);
+      const dpr = window.devicePixelRatio || 1;
+      const cw = this.canvas.width / dpr;
+      const ch = this.canvas.height / dpr;
+
+      if (sp.x < -20 || sp.x > cw + 20 || sp.y < -20 || sp.y > ch + 20) {
+        continue;
+      }
+
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(sp.x, sp.y, 7, 0, Math.PI * 2);
+      ctx.fillStyle = isRed ? '#ef4444' : '#2563eb';
+      ctx.fill();
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = '#ffffff';
+      ctx.stroke();
+
+      ctx.font = 'bold 9px sans-serif';
+      ctx.fillStyle = '#ffffff';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('POL', sp.x, sp.y);
+      ctx.restore();
+    }
   }
 
   /**

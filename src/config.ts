@@ -904,5 +904,74 @@ export const CONFIG = {
       FPS_DOWNGRADE_THRESHOLD: 30,    // 連續 3 秒 FPS < 30 觸發降級
       DOWNGRADE_CHECK_SECONDS: 3.0
     }
+  },
+
+  // 警察執法系統配置 (RULES.md 規範集中化)
+  POLICE: {
+    ENABLED: true,
+    MAX_POLICE_CARS: 3,                 // 預設最多 3 輛警車同時存在
+    MAX_CARS: 3,                        // 簡短別名
+    MAX_ACTIVE_PURSUITS: 2,             // 同時追捕上限 2 起
+    SHOW_ON_MAP: true,                  // 地圖圖示開關
+    SPAWN_MIN_RADIUS: 20.0,             // 生成距離 20 到 110 公尺 (在玩家視野街廓周遭自然巡邏)
+    SPAWN_MAX_RADIUS: 110.0,
+    DESPAWN_RADIUS: 160.0,              // 超過 160 公尺回收並就近重生
+
+    // 巡邏速度與道路
+    PATROL_SPEED_RATIO: 0.90,           // 速度為速限的 90%
+    PATROL_ROAD_TYPES: ['primary', 'secondary', 'tertiary', 'residential', 'unclassified', 'living_street', 'trunk'],
+
+    // 特殊時段與天候減額
+    NIGHT_HOURS_START: 0,               // 深夜 0~5 點巡邏數量減半
+    NIGHT_HOURS_END: 5,
+    STORM_POLICE_COUNT: 1,              // 颱風與強降雨時降為 1 輛
+
+    // 偵測違規
+    DETECTION_RADIUS: 60.0,             // 距離違規位置 60 公尺內
+    DETECTION_FOV_DEG: 140.0,           // 前方約 140 度視角內
+    BLIND_SPOT_DETECTION_CHANCE: 0.25,  // 側面與後方 25% 機率目擊
+    REACTION_DELAY_MIN: 0.5,            // 發現後隨機反應時間 0.5~1.5 秒
+    REACTION_DELAY_MAX: 1.5,
+    REMOTE_SETTLE_DISTANCE: 150.0,      // 超過玩家 150m 違規以機率結算不追逐
+    REMOTE_CITATION_CHANCE: 0.65,       // 遠處結算開罰機率
+    TARGET_COOLDOWN_SEC: 180.0,         // 同一車輛 3 分鐘 (180s) 內不重複列為目標
+
+    // 追捕參數
+    PURSUIT_SPEED_RATIO: 1.40,          // 追捕可超速至速限 1.4 倍
+    RED_LIGHT_CROSS_SPEED_MPS: 4.17,    // 遇紅燈減速至 15 km/h (約 4.17 m/s) 通過
+    PURSUIT_TARGET_DISTANCE: 12.0,      // 追到違規車輛後方約 12 公尺內
+    MAX_PURSUIT_DURATION_SEC: 40.0,     // 追逐時間上限 40 秒
+    REPLAN_PATH_INTERVAL_SEC: 1.0,      // 每 1 秒重新規劃路徑
+
+    // 攔截與違規者反應
+    PULL_OVER_CHANCE: 0.92,             // 違規者配合靠邊機率 92%
+    FLEE_CHANCE: 0.08,                  // 逃跑機率 8%
+    FLEE_RATE: 0.08,                    // 簡短別名
+    FLEE_CHANCE_HURRIED: 0.25,          // 趕時間型逃跑機率較高 25%
+    PULL_OVER_SPEECH_ENABLED: true,     // 頭頂「請靠邊停車」氣泡提示開關
+    STOP_DISTANCE_BEHIND: 6.0,          // 警車停在違規車後方約 6 公尺
+    STOP_LATERAL_OFFSET: 1.5,           // 錯開 1.5 公尺斜停警戒
+
+    // 其他車輛與行人避讓 (讓道)
+    YIELD_SIREN_DISTANCE: 80.0,         // 警笛 80 公尺內觸發讓道
+    RESUME_DELAY_SEC: 3.0,              // 警車通過後 3 秒依序恢復行駛
+    YIELD_RESUME_DELAY_SEC: 3.0,        // 簡短別名
+
+    // 開罰流程
+    CITATION_DURATION_SEC: 7.0,         // 警員站立抄寫開單時間 6~8 秒 (設為 7s)
+
+    // 視覺與燈光
+    LIGHTBAR_FLASH_RATE_HZ: 5.0,        // 警示燈每秒 4~6 次 (設為 5Hz)
+    FAKE_LIGHT_RADIUS: 10.0,            // 地面紅藍光斑半徑 8~12 公尺
+    FAKE_LIGHT_MAX_SETS: 3,             // 假光貼花最多 3 組
+    FAKE_LIGHT_MAX_PLAYER_DIST: 150.0,  // 僅對 150m 內警車啟用
+
+    // 警笛音效
+    SIREN_VOLUME: 0.35,                 // 警笛預設音量
+    SIREN_MAX_DISTANCE: 120.0,          // 警笛最大可聞半徑
+
+    // 效能與自動降級
+    DOWNGRADE_FPS_THRESHOLD: 30,        // FPS < 30 自動關閉地面光斑、警車降至 1
+    AI_BUDGET_MS: 0.5                   // AI 邏輯預算 0.5 ms
   }
 };

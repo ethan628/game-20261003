@@ -30,6 +30,7 @@ export class InputManager {
   public onToggleNightAnalysis?: () => void;
   public onToggleTrafficDebug?: () => void;
   public onToggleStopLineMeasurement?: () => void;
+  public onTogglePoliceDebug?: () => void;
   private isSuspended = false;
 
   constructor(domElement: HTMLElement) {
@@ -141,6 +142,11 @@ export class InputManager {
     if (e.code === 'F14' || e.key === 'F14' || (e.shiftKey && e.code === 'F2')) {
       e.preventDefault();
       this.onToggleStopLineMeasurement?.();
+      return;
+    }
+    if (e.code === 'F15' || e.key === 'F15' || (e.shiftKey && (e.code === 'Backquote' || e.key === '`' || e.key === '~'))) {
+      e.preventDefault();
+      this.onTogglePoliceDebug?.();
       return;
     }
 

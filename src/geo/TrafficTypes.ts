@@ -86,7 +86,11 @@ export type VehicleState =
   | 'STOPPED_PEDESTRIAN'
   | 'PICKING_UP'
   | 'DROPPING_OFF'
-  | 'UNMANNED';
+  | 'UNMANNED'
+  | 'YIELDING_SIREN'
+  | 'PULLING_OVER'
+  | 'PULLED_OVER'
+  | 'FLEEING';
 
 export type TaxiServiceState =
   | 'EMPTY_CRUISING'
@@ -119,6 +123,12 @@ export interface TrafficVehicle {
   state: VehicleState;
   stateTimer: number;
   blockedTimer: number;
+
+  // 警察互動與避讓狀態
+  isFleeing?: boolean;
+  yieldResumeTimer?: number;
+  targetedByPoliceId?: string;
+  lastCitedTimestamp?: number;
 
   // 計程車專用載客狀態
   taxiState: TaxiServiceState;

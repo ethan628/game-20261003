@@ -15,6 +15,8 @@ import { SignboardGenerator } from './SignboardGenerator.ts';
 import { TrafficSignalSystem } from '../systems/traffic-signals/TrafficSignalSystem.ts';
 import { BuildingGenerator } from './BuildingGenerator.ts';
 import { RoadGenerator } from './RoadGenerator.ts';
+import { TerrainFeatureGenerator } from './TerrainFeatureGenerator.ts';
+import { EnvironmentGenerator } from './EnvironmentGenerator.ts';
 
 export interface NightLightingStats {
   activeDecals: number;
@@ -39,6 +41,8 @@ export class NightLightingSystem {
   private signalSystem: TrafficSignalSystem;
   private buildingGen: BuildingGenerator;
   private roadGen: RoadGenerator;
+  private terrainGen?: TerrainFeatureGenerator;
+  private envGen?: EnvironmentGenerator;
 
   // 1. 路燈地面光斑貼花 (InstancedMesh, 1 Draw Call)
   private lampDecalsMesh: THREE.InstancedMesh | null = null;
@@ -128,7 +132,7 @@ export class NightLightingSystem {
           // smoothstep: 从 1 平滑过渡到 0，边缘导数为 0
           const t = 1.0 - dist;
           const s = t * t * (3.0 - 2.0 * t);
-          alpha = Math.pow(s, 2.2); // 柔和自然高斯感衰减
+          alpha = Math.pow(s, 1.4); // 柔和自然高斯感衰减，广角漫射无硬边突兀斑块
         }
         const idx = (y * size + x) * 4;
         imgData.data[idx] = 255;
@@ -461,18 +465,18 @@ export class NightLightingSystem {
         this.dummy.updateMatrix();
         this.lampDecalsMesh.setMatrixAt(decalCount, this.dummy.matrix);
 
-        this.tmpColor.copy(lamp.color).multiplyScalar(effectiveIntensity * 0.82);
+        this.tmpColor.copy(lamp.color).multiplyScalar(effectiveIntensity * 0.35);
         decalColors.setXYZ(decalCount, this.tmpColor.r, this.tmpColor.g, this.tmpColor.b);
         decalCount++;
 
-        // A2. 人行道與靠牆反彈光斑 (y=0.185，在路燈立柱基底，照亮人行道地磚與建築底部，消除硬邊切痕)
-        this.dummy.position.set(lamp.polePos.x, 0.185, lamp.polePos.z);
+        // A2. 人行道與靠牆反彈光斑 (y=0.178，在路燈立柱基底，照亮人行道地磚與建築底部，消除硬邊切痕)
+        this.dummy.position.set(lamp.polePos.x, 0.178, lamp.polePos.z);
         this.dummy.rotation.set(0, 0, 0);
-        this.dummy.scale.set(0.70, 0.70, 0.70);
+        this.dummy.scale.set(0.75, 0.75, 0.75);
         this.dummy.updateMatrix();
         this.lampDecalsMesh.setMatrixAt(decalCount, this.dummy.matrix);
 
-        this.tmpColor.copy(lamp.color).multiplyScalar(effectiveIntensity * 0.50);
+        this.tmpColor.copy(lamp.color).multiplyScalar(effectiveIntensity * 0.28);
         decalColors.setXYZ(decalCount, this.tmpColor.r, this.tmpColor.g, this.tmpColor.b);
         decalCount++;
 
@@ -717,6 +721,7 @@ export class NightLightingSystem {
       const uniforms = (roadMesh.material as any).customShader.uniforms;
       if (uniforms.uNightFactor) uniforms.uNightFactor.value = nightFactor;
       if (uniforms.uBaseNightBrightness) uniforms.uBaseNightBrightness.value = this.baseNightBrightness;
+      if (uniforms.uGroundVisibility) uniforms.uGroundVisibility.value = this.groundVisibility;
       if (uniforms.uWetness) uniforms.uWetness.value = wetness;
       if (uniforms.uNearbyLights) {
         for (let i = 0; i < 8; i++) {
@@ -731,6 +736,7 @@ export class NightLightingSystem {
       const uniforms = (sideMesh.material as any).customShader.uniforms;
       if (uniforms.uNightFactor) uniforms.uNightFactor.value = nightFactor;
       if (uniforms.uBaseNightBrightness) uniforms.uBaseNightBrightness.value = this.baseNightBrightness;
+      if (uniforms.uGroundVisibility) uniforms.uGroundVisibility.value = this.groundVisibility;
       if (uniforms.uNearbyLights) {
         for (let i = 0; i < 8; i++) {
           uniforms.uNearbyLights.value[i].copy(this.nearbyLightPos[i]);
@@ -738,6 +744,60 @@ export class NightLightingSystem {
         }
       }
     }
+
+    const markMesh = this.roadGen.getMarkingsMesh ? this.roadGen.getMarkingsMesh() : null;
+    if (markMesh && (markMesh.material as any).customShader) {
+      const uniforms = (markMesh.material as any).customShader.uniforms;
+      if (uniforms.uNightFactor) uniforms.uNightFactor.value = nightFactor;
+      if (uniforms.uBaseNightBrightness) uniforms.uBaseNightBrightness.value = this.baseNightBrightness;
+      if (uniforms.uGroundVisibility) uniforms.uGroundVisibility.value = this.groundVisibility;
+      if (uniforms.uNearbyLights) {
+        for (let i = 0; i < 8; i++) {
+          uniforms.uNearbyLights.value[i].copy(this.nearbyLightPos[i]);
+          uniforms.uNearbyLightColors.value[i].copy(this.nearbyLightCols[i]);
+        }
+      }
+    }
+
+    if (this.terrainGen) {
+      const green = this.terrainGen.getGreenMesh?.();
+      if (green && (green.material as any).customShader) {
+        const uniforms = (green.material as any).customShader.uniforms;
+        if (uniforms.uNightFactor) uniforms.uNightFactor.value = nightFactor;
+        if (uniforms.uBaseNightBrightness) uniforms.uBaseNightBrightness.value = this.baseNightBrightness;
+        if (uniforms.uGroundVisibility) uniforms.uGroundVisibility.value = this.groundVisibility;
+        if (uniforms.uNearbyLights) {
+          for (let i = 0; i < 8; i++) {
+            uniforms.uNearbyLights.value[i].copy(this.nearbyLightPos[i]);
+            uniforms.uNearbyLightColors.value[i].copy(this.nearbyLightCols[i]);
+          }
+        }
+      }
+    }
+
+    if (this.envGen) {
+      const ground = this.envGen.getGroundMesh?.();
+      if (ground && (ground.material as any).customShader) {
+        const uniforms = (ground.material as any).customShader.uniforms;
+        if (uniforms.uNightFactor) uniforms.uNightFactor.value = nightFactor;
+        if (uniforms.uBaseNightBrightness) uniforms.uBaseNightBrightness.value = this.baseNightBrightness;
+        if (uniforms.uGroundVisibility) uniforms.uGroundVisibility.value = this.groundVisibility;
+        if (uniforms.uNearbyLights) {
+          for (let i = 0; i < 8; i++) {
+            uniforms.uNearbyLights.value[i].copy(this.nearbyLightPos[i]);
+            uniforms.uNearbyLightColors.value[i].copy(this.nearbyLightCols[i]);
+          }
+        }
+      }
+    }
+  }
+
+  public setEnvironmentGenerator(gen: EnvironmentGenerator): void {
+    this.envGen = gen;
+  }
+
+  public setTerrainFeatureGenerator(gen: TerrainFeatureGenerator): void {
+    this.terrainGen = gen;
   }
 
   // --- UI 與控制接口 ---

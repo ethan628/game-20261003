@@ -153,6 +153,10 @@ export class WorldManager {
     return this.terrainGen;
   }
 
+  public getEnvironmentGenerator(): EnvironmentGenerator {
+    return this.environmentGen;
+  }
+
   /**
    * 逐幀計算招牌在相機視野錐內的數量
    */
