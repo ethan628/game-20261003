@@ -553,19 +553,23 @@ export class PoliceSystem {
     }
     if (candidateRoads.length === 0) return false;
 
-    // 依據目前活躍警車數分配理想距離，第一輛優先生成於玩家近景街區 (20~35m)，讓玩家在正常遊戲視角一眼就看到警車行駛
+    // 依據目前活躍警車數分配理想距離，第一輛優先生成於玩家正前方視野街區 (18~32m)，讓玩家在正常遊戲視角一眼就看到警車行駛
     const activeCarsCount = this.vehicles.filter((v) => v.active).length;
-    let targetDist = 28.0;
-    let minR = 15.0;
-    let maxR = 48.0;
+    let targetDist = 22.0;
+    let minR = 14.0;
+    let maxR = 38.0;
     if (activeCarsCount === 1) {
-      targetDist = 52.0;
-      minR = 35.0;
-      maxR = 75.0;
-    } else if (activeCarsCount >= 2) {
-      targetDist = 78.0;
-      minR = 55.0;
-      maxR = 110.0;
+      targetDist = 42.0;
+      minR = 25.0;
+      maxR = 60.0;
+    } else if (activeCarsCount === 2) {
+      targetDist = 65.0;
+      minR = 45.0;
+      maxR = 85.0;
+    } else if (activeCarsCount >= 3) {
+      targetDist = 88.0;
+      minR = 65.0;
+      maxR = 115.0;
     }
 
     // 篩選範圍內的道路
@@ -603,6 +607,33 @@ export class PoliceSystem {
       }
     }
 
+    // 第一輛警車特別優先挑選「位於玩家正前方視角視野內且完全無建築遮擋」的路段 (前方視野扇形、距離 16~30m)
+    // 確保玩家進入遊戲一睜開眼，第一眼就能直接看到警車在眼前街道上行駛！
+    if (activeCarsCount === 0) {
+      const inFrontAndVisible = inRange.filter((c) => {
+        const mx = (c.p1.x + c.p2.x) * 0.5;
+        const mz = (c.p1.z + c.p2.z) * 0.5;
+        const dz = mz - playerPos.z;
+        const dx = mx - playerPos.x;
+        // 位於前方視野扇形
+        const isAhead = dz < -2.0 && Math.abs(dx) <= -dz * 1.6;
+        if (!isAhead) return false;
+        // 確保無建築物遮擋 (與玩家之間完全通視)
+        return !this.isLineOfSightBlocked(playerPos.x, playerPos.z, mx, mz);
+      });
+      if (inFrontAndVisible.length > 0) {
+        // 若有開闊無遮擋的路段，偏好開闊街景側 (dx > 0 或直接位於視線中軸)
+        inFrontAndVisible.sort((a, b) => {
+          const maX = (a.p1.x + a.p2.x) * 0.5;
+          const mbX = (b.p1.x + b.p2.x) * 0.5;
+          const scoreA = maX > playerPos.x ? -10.0 : 0.0;
+          const scoreB = mbX > playerPos.x ? -10.0 : 0.0;
+          return scoreA - scoreB;
+        });
+        inRange = inFrontAndVisible;
+      }
+    }
+
     // 依據目標距離排序，挑選最符合距離的候選路段
     inRange.sort((a, b) => {
       const maX = (a.p1.x + a.p2.x) * 0.5;
@@ -614,11 +645,21 @@ export class PoliceSystem {
       return da - db;
     });
 
-    const pickPool = inRange.slice(0, Math.min(3, inRange.length));
-    const cand = pickPool[Math.floor(Math.random() * pickPool.length)];
+    let cand: { road: RoadFeature; p1: Point2D; p2: Point2D; idx: number };
+    if (activeCarsCount === 0) {
+      cand = inRange[0];
+    } else {
+      const pickPool = inRange.slice(0, Math.min(3, inRange.length));
+      cand = pickPool[Math.floor(Math.random() * pickPool.length)];
+    }
 
-    // 雙向道路隨機決定前進或反向，嚴格保持靠右行駛
-    const isReverse = !cand.road.oneway ? Math.random() < 0.5 : cand.road.oneway === -1;
+    // 雙向道路隨機決定前進或反向，嚴格保持靠右行駛；第一輛車優先向前方延伸方向行駛
+    let isReverse = !cand.road.oneway ? Math.random() < 0.5 : cand.road.oneway === -1;
+    if (activeCarsCount === 0 && !cand.road.oneway) {
+      const d1 = Math.hypot(cand.p1.x - playerPos.x, cand.p1.z - playerPos.z);
+      const d2 = Math.hypot(cand.p2.x - playerPos.x, cand.p2.z - playerPos.z);
+      isReverse = d1 > d2; // 讓 pStart 距離玩家較近、pEnd 向前延伸
+    }
     const pStart = isReverse ? cand.p2 : cand.p1;
     const pEnd = isReverse ? cand.p1 : cand.p2;
 
@@ -638,6 +679,9 @@ export class PoliceSystem {
       const t = (i / 10) * 0.7;
       const testX = pStart.x + dx * t;
       const testZ = pStart.z + dz * t;
+      if (activeCarsCount === 0 && this.isLineOfSightBlocked(playerPos.x, playerPos.z, testX, testZ)) {
+        continue;
+      }
       const curDist = Math.hypot(testX - playerPos.x, testZ - playerPos.z);
       const diff = Math.abs(curDist - targetDist);
       if (diff < bestDiff) {

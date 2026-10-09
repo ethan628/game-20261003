@@ -909,13 +909,13 @@ export const CONFIG = {
   // 警察執法系統配置 (RULES.md 規範集中化)
   POLICE: {
     ENABLED: true,
-    MAX_POLICE_CARS: 3,                 // 預設最多 3 輛警車同時存在
-    MAX_CARS: 3,                        // 簡短別名
+    MAX_POLICE_CARS: 5,                 // 最多 5 輛警車同時存在，維持街區可見巡邏密度
+    MAX_CARS: 5,                        // 簡短別名
     MAX_ACTIVE_PURSUITS: 2,             // 同時追捕上限 2 起
     SHOW_ON_MAP: true,                  // 地圖圖示開關
-    SPAWN_MIN_RADIUS: 20.0,             // 生成距離 20 到 110 公尺 (在玩家視野街廓周遭自然巡邏)
+    SPAWN_MIN_RADIUS: 18.0,             // 生成距離 18 到 110 公尺 (在玩家視野街廓周遭自然巡邏)
     SPAWN_MAX_RADIUS: 110.0,
-    DESPAWN_RADIUS: 160.0,              // 超過 160 公尺回收並就近重生
+    DESPAWN_RADIUS: 135.0,              // 超過 135 公尺回收並就近重生
 
     // 巡邏速度與道路
     PATROL_SPEED_RATIO: 0.90,           // 速度為速限的 90%

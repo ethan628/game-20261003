@@ -130,14 +130,24 @@ export class PoliceRenderer {
     // 右側窗
     parts.push({ geom: new THREE.BoxGeometry(0.04, 0.44, 1.62), offset: [0.74, 1.12, -0.18], color: cGlass });
 
-    // 車頂紅藍警示燈條 (左紅右藍，台灣標準長條排燈)
+    // 車頂紅藍警示燈條 (左紅右藍，台灣標準長條警用排燈，加寬加高以利中遠景辨識)
     const cRedLight: [number, number, number] = [1.0, 0.08, 0.08]; // 紅燈
     const cBlueLight: [number, number, number] = [0.08, 0.32, 1.0]; // 藍燈
     const cWhiteCenter: [number, number, number] = [0.95, 0.95, 0.95]; // 中央白燈
 
-    parts.push({ geom: new THREE.BoxGeometry(0.42, 0.12, 0.22), offset: [-0.35, 1.57, -0.15], color: cRedLight });
-    parts.push({ geom: new THREE.BoxGeometry(0.42, 0.12, 0.22), offset: [0.35, 1.57, -0.15], color: cBlueLight });
-    parts.push({ geom: new THREE.BoxGeometry(0.24, 0.12, 0.22), offset: [0.0, 1.57, -0.15], color: cWhiteCenter });
+    parts.push({ geom: new THREE.BoxGeometry(0.52, 0.18, 0.28), offset: [-0.38, 1.60, -0.15], color: cRedLight });
+    parts.push({ geom: new THREE.BoxGeometry(0.52, 0.18, 0.28), offset: [0.38, 1.60, -0.15], color: cBlueLight });
+    parts.push({ geom: new THREE.BoxGeometry(0.24, 0.18, 0.28), offset: [0.0, 1.60, -0.15], color: cWhiteCenter });
+
+    // 車頭大燈 (左/右，亮白自發光，夜間與遠景清晰可辨)
+    const cHeadlight: [number, number, number] = [1.0, 0.98, 0.88];
+    parts.push({ geom: new THREE.BoxGeometry(0.36, 0.20, 0.12), offset: [-0.62, 0.52, 2.18], color: cHeadlight });
+    parts.push({ geom: new THREE.BoxGeometry(0.36, 0.20, 0.12), offset: [0.62, 0.52, 2.18], color: cHeadlight });
+
+    // 車尾煞車尾燈 (左/右，鮮紅煞車燈)
+    const cTaillight: [number, number, number] = [0.95, 0.08, 0.08];
+    parts.push({ geom: new THREE.BoxGeometry(0.36, 0.20, 0.12), offset: [-0.62, 0.52, -2.18], color: cTaillight });
+    parts.push({ geom: new THREE.BoxGeometry(0.36, 0.20, 0.12), offset: [0.62, 0.52, -2.18], color: cTaillight });
 
     return this.mergeGeometriesWithColors(parts);
   }
@@ -266,7 +276,40 @@ export class PoliceRenderer {
       metalness: 0.15
     });
 
+    // 注入夜間車身識別 Shader：警車白色車身維持清晰微發光底色，藍色條紋鮮明飽滿，保證任何夜晚陰暗處皆清晰可辨
+    mat.onBeforeCompile = (shader) => {
+      shader.vertexShader = `
+        varying vec3 vOrigBodyColor;
+        ${shader.vertexShader}
+      `.replace(
+        '#include <color_vertex>',
+        `
+        #include <color_vertex>
+        vOrigBodyColor = color;
+        `
+      );
+
+      shader.fragmentShader = `
+        varying vec3 vOrigBodyColor;
+        ${shader.fragmentShader}
+      `.replace(
+        '#include <emissivemap_fragment>',
+        `
+        #include <emissivemap_fragment>
+        bool isWhiteBody = vOrigBodyColor.r > 0.85 && vOrigBodyColor.g > 0.85 && vOrigBodyColor.b > 0.85;
+        bool isBlueStripe = vOrigBodyColor.b > 0.60 && vOrigBodyColor.r < 0.25;
+        if (isWhiteBody) {
+          totalEmissiveRadiance += vec3(0.42, 0.42, 0.46);
+        } else if (isBlueStripe) {
+          totalEmissiveRadiance += vec3(0.12, 0.45, 1.05);
+        }
+        `
+      );
+    };
+
     this.carBodyMesh = new THREE.InstancedMesh(geom, mat, this.maxCars);
+    this.carBodyMesh.frustumCulled = false;
+    geom.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 0, 0), 100000);
     this.carBodyMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     this.carBodyMesh.castShadow = true;
     this.carBodyMesh.receiveShadow = true;
@@ -291,10 +334,10 @@ export class PoliceRenderer {
       roughness: 0.1,
       metalness: 0.1,
       transparent: true,
-      opacity: 0.85
+      opacity: 0.92
     });
 
-    // 注入動態紅藍交替閃爍著色 Shader
+    // 注入動態紅藍交替閃爍著色與夜間車燈自發光 Shader
     mat.onBeforeCompile = (shader) => {
       shader.uniforms.uTime = this.timeUniform;
       shader.vertexShader = `
@@ -320,22 +363,37 @@ export class PoliceRenderer {
         '#include <dithering_fragment>',
         `
         #include <dithering_fragment>
-        if (vSirenActive > 0.5) {
-          // 紅藍交替閃爍 (4Hz)
-          float flash = sin(uTime * 24.0);
-          bool isRedSide = vOrigColor.r > 0.6 && vOrigColor.b < 0.3;
-          bool isBlueSide = vOrigColor.b > 0.6 && vOrigColor.r < 0.3;
-          bool isCenterWhite = vOrigColor.r > 0.8 && vOrigColor.g > 0.8 && vOrigColor.b > 0.8;
+        bool isHeadlight = vOrigColor.r > 0.95 && vOrigColor.g > 0.92 && vOrigColor.b > 0.82;
+        bool isTaillight = vOrigColor.r > 0.90 && vOrigColor.g < 0.15 && vOrigColor.b < 0.15;
+        bool isRoofRed = vOrigColor.r > 0.85 && vOrigColor.g < 0.15 && vOrigColor.b < 0.15;
+        bool isRoofBlue = vOrigColor.b > 0.85 && vOrigColor.r < 0.15;
+        bool isCenterWhite = vOrigColor.r > 0.90 && vOrigColor.g > 0.90 && vOrigColor.b > 0.90 && !isHeadlight;
 
-          if (isRedSide) {
-            float intensity = flash > 0.0 ? 3.5 : 0.2;
+        if (isHeadlight) {
+          gl_FragColor.rgb = vec3(1.0, 0.98, 0.88) * 2.6;
+        } else if (isTaillight) {
+          gl_FragColor.rgb = vec3(1.0, 0.08, 0.08) * 2.2;
+        } else if (vSirenActive > 0.5) {
+          // 警笛追捕模式：紅藍白高速閃爍 (4Hz)
+          float flash = sin(uTime * 24.0);
+          if (isRoofRed) {
+            float intensity = flash > 0.0 ? 5.5 : 0.3;
             gl_FragColor.rgb = vec3(1.0, 0.05, 0.05) * intensity;
-          } else if (isBlueSide) {
-            float intensity = flash < 0.0 ? 3.5 : 0.2;
-            gl_FragColor.rgb = vec3(0.05, 0.35, 1.0) * intensity;
+          } else if (isRoofBlue) {
+            float intensity = flash < 0.0 ? 5.5 : 0.3;
+            gl_FragColor.rgb = vec3(0.05, 0.45, 1.0) * intensity;
           } else if (isCenterWhite) {
-            float strobe = sin(uTime * 48.0) > 0.5 ? 2.5 : 0.1;
+            float strobe = sin(uTime * 48.0) > 0.5 ? 4.0 : 0.1;
             gl_FragColor.rgb = vec3(1.0) * strobe;
+          }
+        } else {
+          // 常態巡邏模式：警車車頂紅藍燈維持醒目常亮警戒光 (強度 2.4)，夜間極清晰可辨
+          if (isRoofRed) {
+            gl_FragColor.rgb = vec3(1.0, 0.08, 0.08) * 2.4;
+          } else if (isRoofBlue) {
+            gl_FragColor.rgb = vec3(0.08, 0.42, 1.0) * 2.4;
+          } else if (isCenterWhite) {
+            gl_FragColor.rgb = vec3(0.95, 0.95, 0.95) * 1.5;
           }
         }
         `
@@ -343,6 +401,8 @@ export class PoliceRenderer {
     };
 
     this.carGlassLightMesh = new THREE.InstancedMesh(geom, mat, this.maxCars);
+    this.carGlassLightMesh.frustumCulled = false;
+    geom.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 0, 0), 100000);
     this.carGlassLightMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     this.carGlassLightMesh.name = 'PoliceCarGlassLightMesh';
 
@@ -367,6 +427,8 @@ export class PoliceRenderer {
     });
 
     this.officerMesh = new THREE.InstancedMesh(geom, mat, this.maxOfficers);
+    this.officerMesh.frustumCulled = false;
+    geom.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 0, 0), 100000);
     this.officerMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     this.officerMesh.castShadow = true;
     this.officerMesh.name = 'PoliceOfficerMesh';
@@ -432,6 +494,8 @@ export class PoliceRenderer {
     });
 
     this.groundLightDecalMesh = new THREE.InstancedMesh(geom, mat, this.maxCars);
+    this.groundLightDecalMesh.frustumCulled = false;
+    geom.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 0, 0), 100000);
     this.groundLightDecalMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     this.groundLightDecalMesh.name = 'PoliceGroundLightDecalMesh';
 
