@@ -5,6 +5,7 @@
 import { BuildingSourceStats } from '../geo/OsmTypes.ts';
 import { PedestrianSystemStats, PedestrianSamplingReport } from '../geo/PedestrianTypes.ts';
 import { TrafficSystemStats, StopLineStats, VehicleSamplingReport } from '../geo/TrafficTypes.ts';
+import { LightCoverageReport } from '../world/lightmap/LightmapTypes.ts';
 
 export class HUD {
   private container: HTMLDivElement;
@@ -56,6 +57,10 @@ export class HUD {
   private stopLineOverlay: HTMLDivElement | null = null;
   private stopLineContent: HTMLDivElement | null = null;
   public isStopLineMeasurementVisible = false;
+
+  // F16 光照覆蓋熱圖面板
+  private lightingHeatmapOverlay: HTMLDivElement | null = null;
+  public isLightingHeatmapVisible = false;
 
   constructor() {
     this.container = document.createElement('div');
@@ -132,6 +137,9 @@ export class HUD {
             <button id="btn-ped-sampling-60s" class="hud-btn" style="flex: 1; background: rgba(244, 114, 182, 0.25); border: 1px solid #f472b6; color: #fbcfe8; padding: 4px 6px; border-radius: 4px; cursor: pointer; font-size: 11px; font-weight: bold;">⏱️ 60 秒行為抽樣</button>
             <button id="btn-ped-refresh" class="hud-btn" style="background: rgba(56, 189, 248, 0.2); border: 1px solid #38bdf8; color: #bae6fd; padding: 4px 6px; border-radius: 4px; cursor: pointer; font-size: 11px;">🔄 整理</button>
           </div>
+          <div style="margin-top: 6px;">
+            <button id="btn-knock-ped-on-road" class="hud-btn" style="width: 100%; background: rgba(239, 68, 68, 0.25); border: 1px solid #ef4444; color: #fca5a5; padding: 4px 6px; border-radius: 4px; cursor: pointer; font-size: 11px; font-weight: bold;">💥 讓最近行人被撞倒在車道</button>
+          </div>
           <div id="hud-ped-sampling-report" style="margin-top: 8px;"></div>
         </div>
 
@@ -170,6 +178,36 @@ export class HUD {
             點擊「即時量測」或開啟全城紅燈以檢視停等數據...
           </div>
         </div>
+
+        <!-- F16 光照覆蓋熱圖面板 -->
+        <div class="hud-card hidden" id="hud-lighting-heatmap-overlay" style="font-size: 11px; color: #cbd5e1; width: 340px; background: rgba(15, 23, 42, 0.96); border: 1px solid rgba(16, 185, 129, 0.6); text-align: left; box-shadow: 0 10px 25px rgba(0,0,0,0.6);">
+          <div style="font-weight: 700; color: #34d399; margin-bottom: 6px; border-bottom: 1px solid rgba(148, 163, 184, 0.2); padding-bottom: 4px; display: flex; justify-content: space-between; align-items: center;">
+            <span>🟢 光照覆蓋熱圖 (F16 / Shift+F3)</span>
+            <button id="btn-close-lighting-heatmap" class="hud-btn" style="padding: 2px 6px; font-size: 10px; background: rgba(255,255,255,0.1); border: none; color: #cbd5e1; border-radius: 3px; cursor: pointer;">✕</button>
+          </div>
+          <div id="hud-lighting-heatmap-content">
+            <div style="font-size: 13px; font-weight: bold; color: #10b981; margin-bottom: 6px;">
+              光照覆蓋率: <span id="heatmap-coverage-val">--%</span>
+            </div>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 8px; background: rgba(0,0,0,0.3); padding: 8px; border-radius: 4px;">
+              <div>路燈總數: <b id="heatmap-total-lamps">--</b> 盞</div>
+              <div>OSM 路燈: <b id="heatmap-osm-lamps" style="color: #38bdf8;">--</b> 盞</div>
+              <div>演算法補齊: <b id="heatmap-auto-lamps" style="color: #fbbf24;">--</b> 盞</div>
+              <div>取樣達標: <b id="heatmap-lit-ratio">-- / --</b></div>
+            </div>
+            <div style="background: rgba(0,0,0,0.4); padding: 6px 8px; border-radius: 4px; font-size: 10px; line-height: 1.5;">
+              <div style="font-weight: bold; margin-bottom: 3px; color: #94a3b8;">熱圖圖例 (Heatmap Legend)：</div>
+              <div style="display: flex; align-items: center; gap: 6px; margin-bottom: 2px;">
+                <span style="display: inline-block; width: 10px; height: 10px; background: #10b981; border-radius: 2px;"></span>
+                <span>綠色：照度達標 (光照強度 ≥ 0.25)</span>
+              </div>
+              <div style="display: flex; align-items: center; gap: 6px;">
+                <span style="display: inline-block; width: 10px; height: 10px; background: #ef4444; border-radius: 2px;"></span>
+                <span>紅色：過暗黑洞 (光照強度 &lt; 0.25)</span>
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
 
       <div class="hud-controls-hint">
@@ -195,6 +233,7 @@ export class HUD {
         <div class="hint-pill highlight" id="btn-toggle-traffic-debug" title="切換車輛與駕駛除錯視覺化 (F13)"><b>F13</b> 駕駛除錯</div>
         <div class="hint-pill highlight" id="btn-toggle-stopline-measurement" title="切換停止線量測面板 (F14 / Shift+F2)"><b>F14</b> 停止線量測</div>
         <div class="hint-pill highlight" id="btn-toggle-police-debug" title="切換警察執法除錯面板 (F15 / Shift+\`)"><b>F15</b> 警察執法</div>
+        <div class="hint-pill highlight" id="btn-toggle-lighting-heatmap" title="切換光照覆蓋熱圖 (F16 / Shift+F3)"><b>F16</b> 光照熱圖</div>
         <div class="hint-pill" id="btn-export-estimated" title="匯出待校正推測建築清單 JSON"><b>匯出</b>推測清單</div>
         <div class="hint-pill" id="btn-toggle-wet" title="切換濕潤路面 (R)"><b>R</b> 濕潤路面</div>
         <div class="hint-pill" id="btn-toggle-night" title="切換夜間霓虹 (T)"><b>T</b> 夜間霓虹</div>
@@ -248,6 +287,12 @@ export class HUD {
     // 停止線量測小組件綁定
     this.stopLineOverlay = this.container.querySelector('#hud-stopline-measurement-overlay');
     this.stopLineContent = this.container.querySelector('#hud-stopline-measurement-content');
+
+    // 光照覆蓋熱圖小組件綁定
+    this.lightingHeatmapOverlay = this.container.querySelector('#hud-lighting-heatmap-overlay');
+    this.container.querySelector('#btn-close-lighting-heatmap')?.addEventListener('click', () => {
+      this.toggleLightingHeatmap(false);
+    });
 
     // 點擊任何 HUD 按鈕時主動釋放焦點，避免按空白鍵 (跳躍) 時誤觸按鈕
     this.container.addEventListener('click', () => {
@@ -481,6 +526,15 @@ export class HUD {
           <div>守規斑馬線率: <b style="color: ${zebraCol};">${report.zebraComplianceRatePercent.toFixed(1)}%</b></div>
           <div style="grid-column: span 2;">過街次數: 總計 ${report.crossingsTotal} (斑馬線: ${report.crossingsOnZebra}, 違規: ${report.crossingsViolations})</div>
           <div style="grid-column: span 2;">違規統計: 總計 <b>${report.violationsCount.total} 次 (${report.violationRatePercent.toFixed(1)}%)</b> (紅燈: ${report.violationsCount.jaywalkRed}, 無斑馬線: ${report.violationsCount.crossNoZebra}, 貼車道: ${report.violationsCount.walkRoadEdge})</div>
+          <div style="grid-column: span 2; border-top: 1px dashed rgba(148, 163, 184, 0.2); padding-top: 3px; margin-top: 2px;">
+            <b style="color: #f472b6;">【人車碰撞與脫困統計】</b>
+          </div>
+          <div>特殊狀態人數: <b>${report.specialStatePedestriansCount ?? 0} 人</b></div>
+          <div>越界事件: <b style="color: ${(report.outOfBoundsEventsCount ?? 0) === 0 ? '#4ade80' : '#ef4444'};">${report.outOfBoundsEventsCount ?? 0} 次 (目標: 0)</b></div>
+          <div>離開車道成功: <b style="color: #4ade80;">${report.leaveRoadSuccessCount ?? 0} 次</b></div>
+          <div>離開車道失敗: <b style="color: ${(report.leaveRoadFailCount ?? 0) === 0 ? '#4ade80' : '#ef4444'};">${report.leaveRoadFailCount ?? 0} 次 (目標: 0)</b></div>
+          <div>脫困平均耗時: <b style="color: ${(report.leaveRoadAvgDurationSec ?? 0) <= 8 ? '#4ade80' : '#f59e0b'};">${(report.leaveRoadAvgDurationSec ?? 0).toFixed(1)}s (目標: &lt;8s)</b></div>
+          <div>回到人行道率: <b style="color: ${(report.returnToSidewalkRatioPercent ?? 100) >= 99 ? '#4ade80' : '#f59e0b'};">${(report.returnToSidewalkRatioPercent ?? 100).toFixed(0)}% (目標: 100%)</b></div>
         </div>
       </div>
     `;
@@ -497,6 +551,10 @@ export class HUD {
 
   public onPedRefreshClick(handler: () => void): void {
     this.container.querySelector('#btn-ped-refresh')?.addEventListener('click', handler);
+  }
+
+  public onKnockPedOnRoadClick(handler: () => void): void {
+    this.container.querySelector('#btn-knock-ped-on-road')?.addEventListener('click', handler);
   }
 
   public updateTrafficSignalStats(stats: {
@@ -527,6 +585,7 @@ export class HUD {
   public showNotification(msg: string, durationMs: number = 2400): void {
     if (!this.notificationEl) {
       this.notificationEl = document.createElement('div');
+      this.notificationEl.id = 'hud-notification';
       this.notificationEl.className = 'hud-toast-notification';
       document.body.appendChild(this.notificationEl);
     }
@@ -611,13 +670,26 @@ export class HUD {
   }
 
   public updatePoliceStats(
-    stats: { activeCars: number; patrollingCars: number; activePursuits: number; totalCitations: number; aiTimeMs: number; totalViolations: number },
+    stats: {
+      activeCars: number;
+      patrollingCars: number;
+      activePursuits: number;
+      activePursuitsList?: Array<{ carId: string; targetId: string | number; remainingSec: number }>;
+      totalCitations: number;
+      aiTimeMs: number;
+      totalViolations: number;
+    },
     drawCalls: number
   ): void {
     if (this.policeStatsEl) {
-      this.policeStatsEl.textContent = `警車執法: ${stats.activeCars} 輛 (巡:${stats.patrollingCars} 追:${stats.activePursuits} 罰:${stats.totalCitations}) | 違規: ${stats.totalViolations} | AI: ${stats.aiTimeMs.toFixed(2)}ms | Calls: ${drawCalls}`;
+      let pursuitDetail = '';
+      if (stats.activePursuitsList && stats.activePursuitsList.length > 0) {
+        pursuitDetail = ' [' + stats.activePursuitsList.map((p) => `${p.carId}->${p.targetId}(${p.remainingSec}s)`).join(', ') + ']';
+      }
+      this.policeStatsEl.textContent = `警車執法: ${stats.activeCars} 輛 (巡:${stats.patrollingCars} 追:${stats.activePursuits}${pursuitDetail} 罰:${stats.totalCitations}) | 違規: ${stats.totalViolations} | AI: ${stats.aiTimeMs.toFixed(2)}ms | Calls: ${drawCalls}`;
     }
   }
+
 
   public onPoliceDebugClick(handler: () => void): void {
     this.container.querySelector('#btn-toggle-police-debug')?.addEventListener('click', handler);
@@ -662,6 +734,16 @@ export class HUD {
           <div>逆向行駛事件: <b style="color: ${wrongCol};">${report.wrongWayCount} 次 (目標: 0)</b></div>
           <div>車頭反向事件: <b style="color: ${oppCol};">${report.headOppositeSpeedCount} 次 (目標: 0)</b></div>
           <div style="grid-column: span 2;">違規統計: 總計 <b>${report.violationsCount.total} 次 (${report.violationRatePercent.toFixed(1)}%)</b> (搶燈: ${report.violationsCount.earlyRedRun}, 超速: ${report.violationsCount.speeding}, 壓線: ${report.violationsCount.pressCrosswalk}, 人行道: ${report.violationsCount.scooterSidewalk})</div>
+          ${report.specialStatePedestriansCount !== undefined ? `
+          <div style="grid-column: span 2; border-top: 1px dashed rgba(148, 163, 184, 0.2); padding-top: 3px; margin-top: 2px;">
+            <b style="color: #38bdf8;">【人車碰撞與脫困統計】</b>
+          </div>
+          <div>特殊狀態人數: <b>${report.specialStatePedestriansCount ?? 0} 人</b></div>
+          <div>離開車道成功: <b style="color: #4ade80;">${report.leaveRoadSuccessCount ?? 0} 次</b></div>
+          <div>離開車道失敗: <b style="color: ${(report.leaveRoadFailCount ?? 0) === 0 ? '#4ade80' : '#ef4444'};">${report.leaveRoadFailCount ?? 0} 次 (目標: 0)</b></div>
+          <div>脫困平均耗時: <b style="color: ${(report.leaveRoadAvgDurationSec ?? 0) <= 8 ? '#4ade80' : '#f59e0b'};">${(report.leaveRoadAvgDurationSec ?? 0).toFixed(1)}s (目標: &lt;8s)</b></div>
+          <div>回到人行道率: <b style="color: ${(report.returnToSidewalkRatioPercent ?? 100) >= 99 ? '#4ade80' : '#f59e0b'};">${(report.returnToSidewalkRatioPercent ?? 100).toFixed(0)}% (目標: 100%)</b></div>
+          ` : ''}
         </div>
       </div>
     `;
@@ -821,6 +903,38 @@ export class HUD {
 
   public onStopLineRefreshClick(handler: () => void): void {
     this.container.querySelector('#btn-stopline-refresh')?.addEventListener('click', handler);
+  }
+
+  public toggleLightingHeatmap(forceState?: boolean, report?: LightCoverageReport | null): boolean {
+    this.isLightingHeatmapVisible = forceState !== undefined ? forceState : !this.isLightingHeatmapVisible;
+    if (this.lightingHeatmapOverlay) {
+      if (this.isLightingHeatmapVisible) {
+        this.lightingHeatmapOverlay.classList.remove('hidden');
+        if (report) this.updateLightingHeatmap(report);
+      } else {
+        this.lightingHeatmapOverlay.classList.add('hidden');
+      }
+    }
+    return this.isLightingHeatmapVisible;
+  }
+
+  public updateLightingHeatmap(report: LightCoverageReport | null): void {
+    if (!report) return;
+    const covEl = this.container.querySelector('#heatmap-coverage-val');
+    const totEl = this.container.querySelector('#heatmap-total-lamps');
+    const osmEl = this.container.querySelector('#heatmap-osm-lamps');
+    const autoEl = this.container.querySelector('#heatmap-auto-lamps');
+    const litEl = this.container.querySelector('#heatmap-lit-ratio');
+
+    if (covEl) covEl.textContent = `${report.coveragePercent}% ${report.coveragePercent >= 95 ? '✅ (達標)' : '⚠️'}`;
+    if (totEl) totEl.textContent = report.totalLamps.toString();
+    if (osmEl) osmEl.textContent = report.osmLamps.toString();
+    if (autoEl) autoEl.textContent = report.autoLamps.toString();
+    if (litEl) litEl.textContent = `${report.litPoints} / ${report.totalSamplePoints}`;
+  }
+
+  public onLightingHeatmapClick(handler: () => void): void {
+    this.container.querySelector('#btn-toggle-lighting-heatmap')?.addEventListener('click', handler);
   }
 
   public show(): void {

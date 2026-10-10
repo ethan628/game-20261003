@@ -9,6 +9,7 @@ import { WeatherAudioManager } from '../core/WeatherAudioManager.ts';
 import { WeatherStateType } from '../geo/WeatherTypes.ts';
 import { NightLightingSystem } from '../world/NightLightingSystem.ts';
 import { WeatherRenderer } from '../world/WeatherRenderer.ts';
+import { CONFIG } from '../config.ts';
 
 export class WeatherModal {
   private el: HTMLDivElement;
@@ -228,10 +229,24 @@ export class WeatherModal {
               </div>
               <div>
                 <div style="display: flex; justify-content: space-between; font-size: 12px; color: #cbd5e1;">
-                  <span>路燈地面光斑強度</span>
-                  <span id="lbl-lamp-decal-intensity">1.0x</span>
+                  <span>路燈亮度 (0.5 ~ 2.0)</span>
+                  <span id="lbl-lamp-brightness">1.00x</span>
                 </div>
-                <input type="range" id="slider-lamp-decal" min="0.0" max="2.0" step="0.05" value="1.0" style="width: 100%; accent-color: #f59e0b;" />
+                <input type="range" id="slider-lamp-brightness" min="0.5" max="2.0" step="0.05" value="1.0" style="width: 100%; accent-color: #f59e0b;" />
+              </div>
+              <div>
+                <div style="display: flex; justify-content: space-between; font-size: 12px; color: #cbd5e1;">
+                  <span>照射範圍倍率 (0.7 ~ 1.6)</span>
+                  <span id="lbl-lamp-radius">1.00x</span>
+                </div>
+                <input type="range" id="slider-lamp-radius" min="0.7" max="1.6" step="0.05" value="1.0" style="width: 100%; accent-color: #f59e0b;" />
+              </div>
+              <div>
+                <div style="display: flex; justify-content: space-between; font-size: 12px; color: #cbd5e1;">
+                  <span>路燈最大間距 (20 ~ 40m)</span>
+                  <span id="lbl-lamp-spacing">28m</span>
+                </div>
+                <input type="range" id="slider-lamp-spacing" min="20" max="40" step="1" value="28" style="width: 100%; accent-color: #f59e0b;" />
               </div>
               <div>
                 <div style="display: flex; justify-content: space-between; font-size: 12px; color: #cbd5e1;">
@@ -247,6 +262,28 @@ export class WeatherModal {
                 </div>
                 <input type="range" id="slider-urban-pollution" min="0.0" max="1.5" step="0.05" value="0.6" style="width: 100%; accent-color: #f59e0b;" />
               </div>
+              <div id="lightmap-rebuild-status" style="font-size: 11px; color: #38bdf8; min-height: 16px; margin-top: 2px;"></div>
+              <div style="display: flex; gap: 8px; margin-top: 4px;">
+                <button type="button" id="btn-coverage-report" class="btn" style="flex: 1; font-size: 11px; padding: 6px 4px; background: rgba(59, 130, 246, 0.3); border: 1px solid rgba(59, 130, 246, 0.6);">📊 覆蓋率報告</button>
+                <button type="button" id="btn-toggle-heatmap" class="btn" style="flex: 1; font-size: 11px; padding: 6px 4px; background: rgba(16, 185, 129, 0.3); border: 1px solid rgba(16, 185, 129, 0.6);">🟢 光照覆蓋熱圖 (F16)</button>
+              </div>
+              <div id="coverage-report-box" style="display: none; margin-top: 8px; padding: 8px; background: rgba(10, 15, 30, 0.85); border-radius: 6px; font-size: 11px; font-family: monospace; white-space: pre-wrap; color: #e2e8f0; border: 1px solid rgba(148, 163, 184, 0.3); max-height: 140px; overflow-y: auto;"></div>
+            </div>
+          </div>
+
+          <!-- 4. 交通規則與行人設定 -->
+          <div style="background: rgba(15, 23, 42, 0.6); padding: 14px; border-radius: 8px; border: 1px solid rgba(148, 163, 184, 0.2);">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+              <span style="font-weight: 600; font-size: 15px; color: #a78bfa;">🚶 交通規則與行人設定</span>
+            </div>
+            <div style="display: flex; align-items: center; justify-content: space-between;">
+              <label for="chk-player-crosswalk-only" style="font-size: 13px; color: #cbd5e1; cursor: pointer;">
+                🚶 玩家僅限斑馬線過街 (playerCrosswalkOnly)
+              </label>
+              <input type="checkbox" id="chk-player-crosswalk-only" style="width: 18px; height: 18px; accent-color: #a78bfa; cursor: pointer;" />
+            </div>
+            <div style="font-size: 11px; color: #94a3b8; margin-top: 4px;">
+              開啟後玩家踏上車道將提示「請走斑馬線」並廣播違規事件；關閉時車輛遇玩家煞停避讓。
             </div>
           </div>
         </div>
@@ -431,9 +468,31 @@ export class WeatherModal {
     // 5. GTA 夜景微調滑桿
     const sGroundVis = this.el.querySelector('#slider-ground-visibility') as HTMLInputElement;
     const sNightBri = this.el.querySelector('#slider-night-brightness') as HTMLInputElement;
-    const sLampDecal = this.el.querySelector('#slider-lamp-decal') as HTMLInputElement;
+    const sLampBrightness = this.el.querySelector('#slider-lamp-brightness') as HTMLInputElement;
+    const sLampRadius = this.el.querySelector('#slider-lamp-radius') as HTMLInputElement;
+    const sLampSpacing = this.el.querySelector('#slider-lamp-spacing') as HTMLInputElement;
     const sWinLight = this.el.querySelector('#slider-window-light') as HTMLInputElement;
     const sUrbanPol = this.el.querySelector('#slider-urban-pollution') as HTMLInputElement;
+
+    let rebuildTimeout: number | null = null;
+    const triggerRebuild = () => {
+      const statusEl = this.el.querySelector('#lightmap-rebuild-status');
+      if (statusEl) statusEl.textContent = '⏳ 正在重算區塊光照圖...';
+      if (rebuildTimeout) clearTimeout(rebuildTimeout);
+      rebuildTimeout = window.setTimeout(async () => {
+        try {
+          await this.nightLightingSystem?.rebuildLampCache((p) => {
+            if (statusEl) statusEl.textContent = `⏳ 重算光照圖進度: ${Math.round(p * 100)}%`;
+          });
+          const report = this.nightLightingSystem?.getCoverageReport();
+          if (statusEl) {
+            statusEl.textContent = `✅ 光照圖重算完成！覆蓋率: ${report?.coveragePercent ?? '--'}% (路燈: ${report?.totalLamps ?? 0} 盞)`;
+          }
+        } catch (err) {
+          if (statusEl) statusEl.textContent = `❌ 重算失敗: ${err}`;
+        }
+      }, 350);
+    };
 
     sGroundVis?.addEventListener('input', () => {
       const v = parseFloat(sGroundVis.value);
@@ -450,11 +509,28 @@ export class WeatherModal {
       this.saveNightSettings();
     });
 
-    sLampDecal?.addEventListener('input', () => {
-      const v = parseFloat(sLampDecal.value);
-      this.nightLightingSystem?.setLampDecalIntensity(v);
-      this.el.querySelector('#lbl-lamp-decal-intensity')!.textContent = `${v.toFixed(2)}x`;
+    sLampBrightness?.addEventListener('input', () => {
+      const v = parseFloat(sLampBrightness.value);
+      this.nightLightingSystem?.setLampBrightness(v);
+      this.el.querySelector('#lbl-lamp-brightness')!.textContent = `${v.toFixed(2)}x`;
       this.saveNightSettings();
+      triggerRebuild();
+    });
+
+    sLampRadius?.addEventListener('input', () => {
+      const v = parseFloat(sLampRadius.value);
+      this.nightLightingSystem?.setLampRadiusMultiplier(v);
+      this.el.querySelector('#lbl-lamp-radius')!.textContent = `${v.toFixed(2)}x`;
+      this.saveNightSettings();
+      triggerRebuild();
+    });
+
+    sLampSpacing?.addEventListener('input', () => {
+      const v = parseFloat(sLampSpacing.value);
+      this.nightLightingSystem?.setLampMaxSpacing(v);
+      this.el.querySelector('#lbl-lamp-spacing')!.textContent = `${Math.round(v)}m`;
+      this.saveNightSettings();
+      triggerRebuild();
     });
 
     sWinLight?.addEventListener('input', () => {
@@ -472,6 +548,40 @@ export class WeatherModal {
       this.saveNightSettings();
     });
 
+    // 覆蓋率報告按鈕與熱圖切換
+    const btnReport = this.el.querySelector('#btn-coverage-report') as HTMLButtonElement;
+    const reportBox = this.el.querySelector('#coverage-report-box') as HTMLDivElement;
+    btnReport?.addEventListener('click', () => {
+      const rep = this.nightLightingSystem?.getCoverageReport();
+      if (!rep) {
+        if (reportBox) {
+          reportBox.style.display = 'block';
+          reportBox.textContent = '尚無光照覆蓋率報告資料 (請確認地圖已載入)';
+        }
+        return;
+      }
+      const darkInfo = rep.maxDarkHole
+        ? `位置: (${rep.maxDarkHole.x}, ${rep.maxDarkHole.z})\n預估黑洞面積: ${rep.maxDarkHole.estimatedAreaM2} m²\n最低光照強度: ${rep.maxDarkHole.minIntensity}`
+        : '無黑洞 (全域路網皆達標)';
+      const text = `📊 區塊光照圖覆蓋率報告 (門檻 >= 0.25)\n` +
+        `------------------------------------\n` +
+        `• 路面/人行道覆蓋率: ${rep.coveragePercent}% ${rep.coveragePercent >= 95 ? '✅ (達標 >=95%)' : '⚠️ (未達標)'}\n` +
+        `• 取樣點總數: ${rep.totalSamplePoints} (已照亮達標: ${rep.litPoints})\n` +
+        `• 路燈總數: ${rep.totalLamps} 盞 (OSM: ${rep.osmLamps}, 演算法自動補齊: ${rep.autoLamps})\n` +
+        `• 最大黑洞資訊:\n  ${darkInfo.replace(/\n/g, '\n  ')}`;
+      if (reportBox) {
+        reportBox.style.display = reportBox.style.display === 'block' ? 'none' : 'block';
+        reportBox.textContent = text;
+      }
+      console.log(text);
+    });
+
+    const btnHeatmap = this.el.querySelector('#btn-toggle-heatmap') as HTMLButtonElement;
+    btnHeatmap?.addEventListener('click', () => {
+      const active = this.nightLightingSystem?.toggleHeatmapMode();
+      btnHeatmap.style.background = active ? 'rgba(16, 185, 129, 0.7)' : 'rgba(16, 185, 129, 0.3)';
+    });
+
     // 6. GTA 夜景風格預設按鈕
     const btnPresetVisible = this.el.querySelector('#btn-night-preset-visible') as HTMLButtonElement;
     const btnPresetGta = this.el.querySelector('#btn-night-preset-gta') as HTMLButtonElement;
@@ -487,6 +597,25 @@ export class WeatherModal {
     btnPresetGta?.addEventListener('click', () => setPreset('gta_contrast'));
     btnPresetSoft?.addEventListener('click', () => setPreset('soft'));
     btnPresetDim?.addEventListener('click', () => setPreset('dim'));
+
+    // 7. 玩家僅限斑馬線過街 (playerCrosswalkOnly)
+    const chkCrosswalkOnly = this.el.querySelector('#chk-player-crosswalk-only') as HTMLInputElement;
+    const savedCrosswalkOnly = localStorage.getItem('gta_player_crosswalk_only');
+    if (savedCrosswalkOnly !== null) {
+      const val = savedCrosswalkOnly === 'true';
+      CONFIG.PLAYER_CROSSWALK_ONLY = val;
+      CONFIG.PLAYER.CROSSWALK_ONLY = val;
+      if (chkCrosswalkOnly) chkCrosswalkOnly.checked = val;
+    } else {
+      if (chkCrosswalkOnly) chkCrosswalkOnly.checked = CONFIG.PLAYER_CROSSWALK_ONLY;
+    }
+    chkCrosswalkOnly?.addEventListener('change', () => {
+      const checked = chkCrosswalkOnly.checked;
+      CONFIG.PLAYER_CROSSWALK_ONLY = checked;
+      CONFIG.PLAYER.CROSSWALK_ONLY = checked;
+      localStorage.setItem('gta_player_crosswalk_only', checked ? 'true' : 'false');
+      console.log(`[WeatherModal] 玩家僅限斑馬線過街已設定為: ${checked}`);
+    });
   }
 
   private syncManualSlidersWithTarget(params: any): void {
@@ -554,7 +683,9 @@ export class WeatherModal {
     const data = {
       groundVisibility: this.weatherRenderer?.getGroundVisibility() ?? 1.0,
       nightBrightness: this.nightLightingSystem?.getBaseNightBrightness() ?? 1.3,
-      lampDecal: this.nightLightingSystem?.getLampDecalIntensity() ?? 1.0,
+      lampBrightness: this.nightLightingSystem?.getLampBrightness() ?? 1.0,
+      lampRadius: this.nightLightingSystem?.getLampRadiusMultiplier() ?? 1.0,
+      lampSpacing: this.nightLightingSystem?.getLampMaxSpacing() ?? 28.0,
       windowLight: this.nightLightingSystem?.getWindowLightRatio() ?? 0.5,
       urbanPollution: this.nightLightingSystem?.getUrbanLightPollution() ?? 0.6
     };
@@ -575,8 +706,16 @@ export class WeatherModal {
           this.nightLightingSystem?.setBaseNightBrightness(d.nightBrightness);
           this.weatherRenderer?.setNightBrightness(d.nightBrightness);
         }
-        if (typeof d.lampDecal === 'number') {
-          this.nightLightingSystem?.setLampDecalIntensity(d.lampDecal);
+        if (typeof d.lampBrightness === 'number') {
+          this.nightLightingSystem?.setLampBrightness(d.lampBrightness);
+        } else if (typeof d.lampDecal === 'number') {
+          this.nightLightingSystem?.setLampBrightness(d.lampDecal);
+        }
+        if (typeof d.lampRadius === 'number') {
+          this.nightLightingSystem?.setLampRadiusMultiplier(d.lampRadius);
+        }
+        if (typeof d.lampSpacing === 'number') {
+          this.nightLightingSystem?.setLampMaxSpacing(d.lampSpacing);
         }
         if (typeof d.windowLight === 'number') {
           this.nightLightingSystem?.setWindowLightRatio(d.windowLight);
@@ -725,7 +864,9 @@ export class WeatherModal {
     this.refreshNightPresetButtons();
     const groundVis = this.weatherRenderer?.getGroundVisibility() ?? 1.0;
     const nightBri = this.weatherRenderer?.getNightBrightness() ?? (this.nightLightingSystem?.getBaseNightBrightness() ?? 1.0);
-    const lampDecal = this.nightLightingSystem?.getLampDecalIntensity() ?? 1.0;
+    const lampBri = this.nightLightingSystem?.getLampBrightness() ?? 1.0;
+    const lampRad = this.nightLightingSystem?.getLampRadiusMultiplier() ?? 1.0;
+    const lampSp = this.nightLightingSystem?.getLampMaxSpacing() ?? 28.0;
     const winLight = this.nightLightingSystem?.getWindowLightRatio() ?? 0.5;
     const urbanPol = this.nightLightingSystem?.getUrbanLightPollution() ?? 0.6;
 
@@ -739,10 +880,20 @@ export class WeatherModal {
     const lblNightBri = this.el.querySelector('#lbl-night-brightness');
     if (lblNightBri) lblNightBri.textContent = `${nightBri.toFixed(2)}x`;
 
-    const sLampDecal = this.el.querySelector('#slider-lamp-decal') as HTMLInputElement;
-    if (sLampDecal) sLampDecal.value = lampDecal.toString();
-    const lblLampDecal = this.el.querySelector('#lbl-lamp-decal-intensity');
-    if (lblLampDecal) lblLampDecal.textContent = `${lampDecal.toFixed(2)}x`;
+    const sLampBrightness = this.el.querySelector('#slider-lamp-brightness') as HTMLInputElement;
+    if (sLampBrightness) sLampBrightness.value = lampBri.toString();
+    const lblLampBri = this.el.querySelector('#lbl-lamp-brightness');
+    if (lblLampBri) lblLampBri.textContent = `${lampBri.toFixed(2)}x`;
+
+    const sLampRadius = this.el.querySelector('#slider-lamp-radius') as HTMLInputElement;
+    if (sLampRadius) sLampRadius.value = lampRad.toString();
+    const lblLampRad = this.el.querySelector('#lbl-lamp-radius');
+    if (lblLampRad) lblLampRad.textContent = `${lampRad.toFixed(2)}x`;
+
+    const sLampSpacing = this.el.querySelector('#slider-lamp-spacing') as HTMLInputElement;
+    if (sLampSpacing) sLampSpacing.value = lampSp.toString();
+    const lblLampSp = this.el.querySelector('#lbl-lamp-spacing');
+    if (lblLampSp) lblLampSp.textContent = `${Math.round(lampSp)}m`;
 
     const sWinLight = this.el.querySelector('#slider-window-light') as HTMLInputElement;
     if (sWinLight) sWinLight.value = winLight.toString();

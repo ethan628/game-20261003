@@ -225,6 +225,11 @@ export interface VehicleSamplingReport {
   averageSpeedKmh: number;
   wrongWayCount: number;               // 目標 0
   headOppositeSpeedCount: number;      // 目標 0
+  specialStatePedestriansCount?: number; // 特殊狀態行人數
+  leaveRoadSuccessCount?: number;        // 離開車道成功次數
+  leaveRoadAvgDurationSec?: number;      // 離開車道平均耗時
+  leaveRoadFailCount?: number;           // 離開車道失敗次數 (目標 0)
+  returnToSidewalkRatioPercent?: number; // 回到人行道比例 (目標 100%)
   violationsCount: {
     earlyRedRun: number;
     speeding: number;

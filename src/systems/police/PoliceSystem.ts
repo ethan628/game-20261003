@@ -55,7 +55,13 @@ export class PoliceSystem {
   private samplingInterceptTimeSum = 0;
   private samplingInterceptCount = 0;
   private samplingStuckCount = 0;
+  private samplingJitterCount = 0;
+  private samplingUnstuckCount = 0;
+  private samplingNoTargetCount = 0;
   private samplingReport: PoliceSamplingReport | null = null;
+
+  // 暫存全車隊與交通車快取 (供違規指派使用)
+  private lastTrafficVehicles: TrafficVehicle[] = [];
 
   // 預留執法照相機 (RULES.md 規範)
   private enforcementCameras: EnforcementCamera[] = [];
@@ -70,11 +76,11 @@ export class PoliceSystem {
     try {
       this.worker = new Worker(new URL('./PoliceWorker.ts', import.meta.url), { type: 'module' });
       this.worker.onmessage = (e: MessageEvent) => {
-        const { type, carId, waypoints } = e.data;
+        const { type, carId, waypoints, cost, pathHash, targetPos } = e.data;
         if (type === 'PURSUIT_PATH_RESULT') {
           const ctrl = this.controllers.find((c) => c.vehicle.id === carId);
-          if (ctrl && waypoints) {
-            ctrl.setPathWaypoints(waypoints);
+          if (ctrl) {
+            ctrl.onPathPlanResult(waypoints, cost, pathHash, targetPos);
           }
         }
       };
@@ -82,6 +88,7 @@ export class PoliceSystem {
       console.warn('[PoliceSystem] Web Worker 初始化失敗，將採用直覺導航:', e);
     }
   }
+
 
   private setupEventListeners(): void {
     window.addEventListener('violation:committed', (evt: any) => {
@@ -235,9 +242,18 @@ export class PoliceSystem {
       pursuitTimer: 0,
       stuckTimer: 0,
       targetViolator: null,
+      targetInvalidTimer: 0,
       pathWaypoints: [],
       pathIndex: 0,
       lastReplanTime: 0,
+      committedSegmentIndex: 0,
+      steeringAngle: 0,
+      targetSteeringAngle: 0,
+      steeringHeadingDiff: 0,
+      steeringFlips: [],
+      jitterDetected: false,
+      stuckAnchorPos: { x: 0, z: 0 },
+      stuckDisplacementTimer: 0,
       officers,
       sirenActive: false,
       sirenMode: 'wail',
@@ -245,6 +261,7 @@ export class PoliceSystem {
       wigWagPhase: 0
     };
   }
+
 
   /**
    * 逐幀更新警察系統
@@ -260,6 +277,9 @@ export class PoliceSystem {
     if (!CONFIG.POLICE.ENABLED || this.roads.length === 0) return;
 
     const tStart = performance.now();
+
+    // 儲存當前交通車陣列供事件與讓道參照
+    this.lastTrafficVehicles = allTrafficVehicles;
 
     // 1. 每分鐘開罰計時維護
     this.minuteTimer += dt;
@@ -318,35 +338,64 @@ export class PoliceSystem {
         continue;
       }
 
-      // 卡住檢測 (超過 10s 未移動且非開單停靠)
-      if (v.speed < 0.1 && v.state !== 'STOP_AND_CITE') {
+      // 卡住檢測 (超過 10s 未移動且非開單停靠，且非紅燈停等或排隊停等)
+      const isWaitingSignal = ctrl.isWaitingAtRedSignal();
+      const isQueued = ctrl.isQueuedBehindTraffic();
+      if (v.speed < 0.1 && v.state !== 'STOP_AND_CITE' && !isWaitingSignal && !isQueued) {
         v.stuckTimer += dt;
-        if (v.stuckTimer > 10.0) {
+        if (v.stuckTimer > CONFIG.POLICE.STUCK_TIMEOUT_DESPAWN_SEC) {
           if (this.isSampling) this.samplingStuckCount++;
-          // 重新導向或略微推進防卡住
+          if (v.state === 'PURSUIT' || v.state === 'INTERCEPT') {
+            v.state = 'RETURN';
+            v.stateTimer = 0;
+            v.sirenActive = false;
+            v.targetViolator = null;
+            v.pathWaypoints = [];
+          } else {
+            // 巡邏狀態卡住 > 10s：將警車移出玩家視野後重新生成 (不可在玩家眼前瞬間消失)
+            this.relocateStuckPoliceOffScreen(v, playerPos);
+          }
           v.stuckTimer = 0;
-          v.targetSpeed = 4.0;
+          v.stuckReason = undefined;
         }
       } else {
         v.stuckTimer = 0;
+        if (v.speed > 0.5) {
+          v.stuckReason = undefined;
+        }
       }
 
       const events = ctrl.update(dt, allTrafficVehicles, allPedestrians, playerPos);
 
-      // 轉發 A* 尋路請求至 Worker
+      // 抽樣統計：監控抖動與脫困事件 (以事件觸發計數，非逐幀累加)
+      if (this.isSampling) {
+        if (events.jitterTriggered) this.samplingJitterCount++;
+        if (events.unstuckTriggered) this.samplingUnstuckCount++;
+      }
+
+      // 轉發 A* 尋路請求至 Worker (帶有車頭方向與當前道路，確保正向搜尋)
       if (events.requestPathPlan && this.worker) {
         this.worker.postMessage({
           type: 'PLAN_PURSUIT_PATH',
           payload: {
             carId: v.id,
             from: events.requestPathPlan.from,
-            to: events.requestPathPlan.to
+            to: events.requestPathPlan.to,
+            carHeading: v.rotationY,
+            currentRoadId: v.currentRoadId
           }
         });
       }
 
       // 追逐結束事件
       if (events.pursuitEndedResult) {
+        // 解除目標 NPC 車輛鎖定狀態
+        for (const tv of allTrafficVehicles) {
+          if (tv.targetedByPoliceId === v.id) {
+            tv.targetedByPoliceId = undefined;
+          }
+        }
+
         if (events.pursuitEndedResult === 'intercepted') {
           if (this.isSampling) {
             this.samplingIntercepted++;
@@ -397,6 +446,7 @@ export class PoliceSystem {
 
     this.lastAiTimeMs = performance.now() - tStart;
   }
+
 
   /**
    * 處理違規事件 (警察不是全知：距離 60m、視角 140 度、建築遮擋檢測)
@@ -463,6 +513,12 @@ export class PoliceSystem {
       return; // 被建築物遮擋，警察未看見
     }
 
+    // 檢查目標是否已在被其他警車追捕中 (同一目標最多一輛警車追)
+    const alreadyTargeted = this.vehicles.some(
+      (v) => v.active && v.targetViolator && String(v.targetViolator.id) === String(data.id)
+    );
+    if (alreadyTargeted) return;
+
     // 發現違規！分配警車接手
     if (this.isSampling) this.samplingDetected++;
 
@@ -476,6 +532,14 @@ export class PoliceSystem {
     closestPolice.targetViolator = data;
     closestPolice.targetVehicleId = data.actorType === 'vehicle' ? String(data.id) : undefined;
     closestPolice.targetPedestrianId = data.actorType === 'pedestrian' ? Number(data.id) : undefined;
+
+    // 將目標 NPC 車輛標記為被鎖定 (防止其進入 YIELDING_SIREN 死結，直接啟動靠邊或逃逸)
+    if (data.actorType === 'vehicle') {
+      const tv = this.lastTrafficVehicles.find((t) => String(t.id) === String(data.id));
+      if (tv) {
+        tv.targetedByPoliceId = closestPolice.id;
+      }
+    }
 
     if (this.isSampling) {
       this.samplingReactionTimeSum += reactionTime;
@@ -494,6 +558,7 @@ export class PoliceSystem {
       })
     );
   }
+
 
   /**
    * 2D 建築遮擋線段相交檢測 (精準快速，不使用 3D raycast)
@@ -733,19 +798,31 @@ export class PoliceSystem {
     let citing = 0;
     let pursuits = 0;
 
+    const activePursuitsList: Array<{ carId: string; targetId: string | number; remainingSec: number }> = [];
+
     for (const v of this.vehicles) {
       if (!v.active) continue;
       if (v.state === 'PATROL' || v.state === 'RETURN') patrolling++;
       else if (v.state === 'PURSUIT') pursuits++;
       else if (v.state === 'INTERCEPT') intercepting++;
       else if (v.state === 'STOP_AND_CITE') citing++;
+
+      if ((v.state === 'PURSUIT' || v.state === 'INTERCEPT') && v.targetViolator) {
+        const remaining = Math.max(0, CONFIG.POLICE.MAX_PURSUIT_DURATION_SEC - v.pursuitTimer);
+        activePursuitsList.push({
+          carId: v.id,
+          targetId: v.targetViolator.id,
+          remainingSec: Math.round(remaining)
+        });
+      }
     }
 
     const activeCars = this.vehicles.filter((v) => v.active).length;
     return {
       totalPoliceCars: activeCars,
       activeCars,
-      activePursuits: pursuits + intercepting,
+      activePursuits: activePursuitsList.length,
+      activePursuitsList,
       citationsThisMinute: this.citationsThisMinute,
       totalCitationsIssued: this.citationsCountTotal,
       totalCitations: this.citationsCountTotal,
@@ -762,6 +839,7 @@ export class PoliceSystem {
       drawCalls
     };
   }
+
 
   /**
    * 啟動 60 秒執法抽樣評估
@@ -780,9 +858,13 @@ export class PoliceSystem {
     this.samplingInterceptTimeSum = 0;
     this.samplingInterceptCount = 0;
     this.samplingStuckCount = 0;
+    this.samplingJitterCount = 0;
+    this.samplingUnstuckCount = 0;
+    this.samplingNoTargetCount = 0;
     this.samplingReport = null;
     console.log('[PoliceSystem] 開始 60 秒執法抽樣評估...');
   }
+
 
   private finishSampling(): void {
     this.isSampling = false;
@@ -790,6 +872,10 @@ export class PoliceSystem {
     const rate = totalDone > 0 ? (this.samplingIntercepted / totalDone) * 100 : 90;
     const avgReact = this.samplingReactionCount > 0 ? this.samplingReactionTimeSum / this.samplingReactionCount : 0.85;
     const avgIntercept = this.samplingInterceptCount > 0 ? this.samplingInterceptTimeSum / this.samplingInterceptCount : 12.0;
+
+    const validRatio = this.samplingPursuit > 0
+      ? Math.max(0, ((this.samplingPursuit - this.samplingNoTargetCount) / this.samplingPursuit) * 100)
+      : 100;
 
     this.samplingReport = {
       samplingDurationSec: 60.0,
@@ -799,6 +885,8 @@ export class PoliceSystem {
       policeDetectedCount: this.samplingDetected,
       pursuitCount: this.samplingPursuit,
       pursuitsInitiatedCount: this.samplingPursuit,
+      pursuitsStartedCount: this.samplingPursuit,
+      validPursuitRatioPercent: Math.round(validRatio * 10) / 10,
       interceptedCount: this.samplingIntercepted,
       interceptedAndCitedCount: this.samplingIntercepted,
       escapedCount: this.samplingEscaped,
@@ -809,15 +897,132 @@ export class PoliceSystem {
       averageReactionTimeSec: Math.round(avgReact * 100) / 100,
       averageInterceptTimeSec: Math.round(avgIntercept * 10) / 10,
       stuckEventsCount: this.samplingStuckCount,
+      jitterEventsCount: this.samplingJitterCount,
+      unstuckEventsCount: this.samplingUnstuckCount,
+      noTargetPursuitCount: this.samplingNoTargetCount,
       collisionEventsCount: 0,
-      isCompliant: this.samplingStuckCount === 0 && rate >= 80
+      isCompliant:
+        this.samplingStuckCount === 0 &&
+        this.samplingJitterCount === 0 &&
+        this.samplingNoTargetCount === 0 &&
+        rate >= 80
     };
+
     console.log('[PoliceSystem] 60 秒執法抽樣完成:', this.samplingReport);
   }
 
   public getSamplingReport(): PoliceSamplingReport | null {
     return this.samplingReport;
   }
+
+  /**
+   * 取得活躍警笛警車座標列表 (供交通車讓道系統感測)
+   */
+  public getActiveSirenPositions(): Array<{ x: number; z: number; heading: number; speed: number; id: string }> {
+    const list: Array<{ x: number; z: number; heading: number; speed: number; id: string }> = [];
+    for (const v of this.vehicles) {
+      if (v.active && v.sirenActive) {
+        list.push({
+          x: v.x,
+          z: v.z,
+          heading: v.rotationY,
+          speed: v.speed,
+          id: v.id
+        });
+      }
+    }
+    return list;
+  }
+
+  /**
+   * 列出當前抖動或卡住的警車
+   */
+  public listStuckOrJitteringCars(): Array<{
+    id: string;
+    state: string;
+    x: number;
+    z: number;
+    speed: number;
+    stuckTimer: number;
+    stuckReason: string;
+    jitterDetected: boolean;
+    steeringFlipsCount: number;
+  }> {
+    const res: any[] = [];
+    for (let i = 0; i < this.vehicles.length; i++) {
+      const v = this.vehicles[i];
+      const ctrl = this.controllers[i];
+      if (!v.active) continue;
+      const isWaitingSignal = ctrl ? ctrl.isWaitingAtRedSignal() : false;
+      const isQueued = ctrl ? ctrl.isQueuedBehindTraffic() : false;
+      const isLegit = isWaitingSignal || isQueued;
+      const isStuck = (v.stuckTimer > 5.0 && !isLegit) || (v.stuckReason !== undefined && !isLegit);
+      if (isStuck || v.jitterDetected) {
+        res.push({
+          id: v.id,
+          state: v.state,
+          x: Math.round(v.x * 10) / 10,
+          z: Math.round(v.z * 10) / 10,
+          speed: Math.round(v.speed * 3.6 * 10) / 10,
+          stuckTimer: Math.round(v.stuckTimer * 10) / 10,
+          stuckReason: v.stuckReason || (v.jitterDetected ? 'jitter' : 'low_speed'),
+          jitterDetected: v.jitterDetected,
+          steeringFlipsCount: v.steeringFlips ? v.steeringFlips.length : 0
+        });
+      }
+    }
+    return res;
+  }
+
+  /**
+   * 將卡住警車移出玩家視野後重新生成 (不可在玩家眼前瞬間消失)
+   */
+  private relocateStuckPoliceOffScreen(v: PoliceVehicle, playerPos: Point2D): void {
+    let candidateRoads = this.roads.filter(
+      (r) => CONFIG.POLICE.PATROL_ROAD_TYPES.includes(r.type) && r.points.length >= 2
+    );
+    if (candidateRoads.length === 0) candidateRoads = this.roads.filter((r) => r.points.length >= 2);
+    if (candidateRoads.length === 0) return;
+
+    for (const r of candidateRoads) {
+      for (let s = 0; s < r.points.length - 1; s++) {
+        const mx = (r.points[s].x + r.points[s + 1].x) * 0.5;
+        const mz = (r.points[s].z + r.points[s + 1].z) * 0.5;
+        const d = Math.hypot(mx - playerPos.x, mz - playerPos.z);
+        if (d >= 45.0 && d <= 90.0) {
+          if (this.isLineOfSightBlocked(playerPos.x, playerPos.z, mx, mz) || d > 65.0) {
+            const p1 = r.points[s];
+            const p2 = r.points[s + 1];
+            const dx = p2.x - p1.x;
+            const dz = p2.z - p1.z;
+            const len = Math.hypot(dx, dz) || 1.0;
+            const heading = Math.atan2(dx / len, dz / len);
+            const rightNormX = dz / len;
+            const rightNormZ = -dx / len;
+            const offset = Math.max(1.2, r.width * 0.25);
+
+            v.x = mx + rightNormX * offset;
+            v.z = mz + rightNormZ * offset;
+            v.rotationY = heading;
+            v.currentRoadId = r.id;
+            v.roadPointIndex = s + 1;
+            v.isReverse = false;
+            v.speed = CONFIG.TRAFFIC.BASE_SPEED_MPS * CONFIG.POLICE.PATROL_SPEED_RATIO;
+            v.targetSpeed = v.speed;
+            v.targetPoint = { x: p2.x + rightNormX * offset, z: p2.z + rightNormZ * offset };
+            v.state = 'PATROL';
+            v.stateTimer = 0;
+            v.stuckTimer = 0;
+            v.stuckReason = undefined;
+            v.steeringAngle = 0;
+            v.pathWaypoints = [];
+            return;
+          }
+        }
+      }
+    }
+  }
+
 
   public checkLineOfSightBlocked(x1: number, z1: number, x2: number, z2: number): boolean {
     return this.isLineOfSightBlocked(x1, z1, x2, z2);

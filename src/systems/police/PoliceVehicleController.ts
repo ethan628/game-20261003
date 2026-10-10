@@ -15,6 +15,7 @@ export class PoliceVehicleController {
   private roads: RoadFeature[];
   private intersections: IntersectionFeature[];
   private trafficSignalSystem?: TrafficSignalSystem;
+  private lastClosestObstacleDist = Infinity;
 
   constructor(
     vehicle: PoliceVehicle,
@@ -52,16 +53,20 @@ export class PoliceVehicleController {
 
   /**
    * 逐幀更新警車狀態機、路徑導航與物理移動
+  /**
+   * 逐幀更新警車狀態機、路徑導航與物理移動
    */
   public update(
     dt: number,
     allTrafficVehicles: TrafficVehicle[],
     allPedestrians: PedestrianAgent[],
-    _playerPos: Point2D
+    playerPos: Point2D
   ): {
     requestPathPlan?: { from: Point2D; to: Point2D };
     pursuitEndedResult?: 'intercepted' | 'escaped' | 'abandoned';
     citationIssued?: { actorType: 'vehicle' | 'pedestrian'; id: string | number; violationType: string; pos: Point2D };
+    unstuckTriggered?: boolean;
+    jitterTriggered?: boolean;
   } {
     const v = this.vehicle;
     if (!v.active) return {};
@@ -70,6 +75,8 @@ export class PoliceVehicleController {
       requestPathPlan?: { from: Point2D; to: Point2D };
       pursuitEndedResult?: 'intercepted' | 'escaped' | 'abandoned';
       citationIssued?: { actorType: 'vehicle' | 'pedestrian'; id: string | number; violationType: string; pos: Point2D };
+      unstuckTriggered?: boolean;
+      jitterTriggered?: boolean;
     } = {};
 
     v.stateTimer += dt;
@@ -89,6 +96,33 @@ export class PoliceVehicleController {
       v.wigWagPhase = 0;
     }
 
+    // 6 秒位移檢查 (排除 STOP_AND_CITE 開單停妥與紅燈停等狀態)
+    if (v.state !== 'STOP_AND_CITE') {
+      v.stuckDisplacementTimer += dt;
+      if (v.stuckDisplacementTimer >= CONFIG.POLICE.STUCK_DISPLACEMENT_CHECK_SEC) {
+        v.stuckDisplacementTimer = 0;
+        const d6 = Math.hypot(v.x - v.stuckAnchorPos.x, v.z - v.stuckAnchorPos.z);
+        if (d6 < CONFIG.POLICE.STUCK_MIN_DISPLACEMENT_M && !this.shouldStopAtRedSignal()) {
+          v.stuckReason = 'low_displacement_6s';
+          resultEvent.unstuckTriggered = true;
+          if (v.state === 'PURSUIT' || v.state === 'INTERCEPT') {
+            v.state = 'RETURN';
+            v.stateTimer = 0;
+            v.sirenActive = false;
+            v.targetViolator = null;
+            v.pathWaypoints = [];
+            resultEvent.pursuitEndedResult = 'abandoned';
+          }
+        } else if (d6 >= CONFIG.POLICE.STUCK_MIN_DISPLACEMENT_M) {
+          v.stuckReason = undefined;
+        }
+        v.stuckAnchorPos = { x: v.x, z: v.z };
+      }
+    } else {
+      v.stuckDisplacementTimer = 0;
+      v.stuckAnchorPos = { x: v.x, z: v.z };
+    }
+
     // 狀態機分支
     switch (v.state) {
       case 'PATROL':
@@ -100,11 +134,11 @@ export class PoliceVehicleController {
         break;
 
       case 'PURSUIT':
-        resultEvent = this.updatePursuit(dt, allTrafficVehicles, allPedestrians);
+        resultEvent = this.updatePursuit(dt, allTrafficVehicles, allPedestrians, playerPos);
         break;
 
       case 'INTERCEPT':
-        resultEvent = this.updateIntercept(dt, allTrafficVehicles, allPedestrians);
+        resultEvent = this.updateIntercept(dt, allTrafficVehicles, allPedestrians, playerPos);
         break;
 
       case 'STOP_AND_CITE':
@@ -116,8 +150,40 @@ export class PoliceVehicleController {
         break;
     }
 
-    // 更新物理位移與平滑轉向
+    // 更新物理位移與平滑轉向 (Pure Pursuit)
     this.updateMovement(dt, allTrafficVehicles, allPedestrians);
+
+    // 抖動偵測 (2秒內轉向符號翻轉超過 4 次且車速低於 5 km/h)
+    const sign = Math.abs(v.steeringAngle) > 0.035 ? Math.sign(v.steeringAngle) : 0;
+    const nowSec = performance.now() * 0.001;
+    if (sign !== 0) {
+      const lastFlip = v.steeringFlips.length > 0 ? v.steeringFlips[v.steeringFlips.length - 1] : null;
+      if (!lastFlip || lastFlip.sign !== sign) {
+        v.steeringFlips.push({ time: nowSec, sign });
+      }
+    }
+    v.steeringFlips = v.steeringFlips.filter((f) => nowSec - f.time <= CONFIG.POLICE.JITTER_WINDOW_SEC);
+    if (
+      v.steeringFlips.length >= CONFIG.POLICE.JITTER_MAX_SIGN_FLIPS &&
+      v.speed * 3.6 < CONFIG.POLICE.JITTER_SPEED_MAX_KMH
+    ) {
+      if (!v.jitterDetected) {
+        resultEvent.jitterTriggered = true;
+        resultEvent.unstuckTriggered = true;
+      }
+      v.jitterDetected = true;
+      v.stuckReason = 'steering_jitter';
+      if (v.state === 'PURSUIT' || v.state === 'INTERCEPT') {
+        v.state = 'RETURN';
+        v.stateTimer = 0;
+        v.sirenActive = false;
+        v.targetViolator = null;
+        v.pathWaypoints = [];
+        resultEvent.pursuitEndedResult = 'abandoned';
+      }
+    } else {
+      v.jitterDetected = false;
+    }
 
     return resultEvent;
   }
@@ -150,6 +216,7 @@ export class PoliceVehicleController {
       v.sirenActive = true;
       v.sirenMode = 'wail';
       v.lastReplanTime = 0;
+      v.lastReplanPos = undefined;
     }
   }
 
@@ -159,7 +226,8 @@ export class PoliceVehicleController {
   private updatePursuit(
     dt: number,
     allTrafficVehicles: TrafficVehicle[],
-    allPedestrians: PedestrianAgent[]
+    allPedestrians: PedestrianAgent[],
+    playerPos: Point2D
   ): {
     requestPathPlan?: { from: Point2D; to: Point2D };
     pursuitEndedResult?: 'intercepted' | 'escaped' | 'abandoned';
@@ -168,21 +236,33 @@ export class PoliceVehicleController {
     v.sirenActive = true;
     v.pursuitTimer += dt;
 
-    // 超過 40 秒放棄追逐
-    if (v.pursuitTimer > CONFIG.POLICE.MAX_PURSUIT_DURATION_SEC) {
-      v.state = 'RETURN';
-      v.sirenActive = false;
-      v.targetViolator = null;
-      return { pursuitEndedResult: 'abandoned' };
+    // 檢查目標有效性 (不存在、被回收、超出 150m、已停下、已開罰、超過 40 秒)
+    const targetCheck = this.checkTargetValidity(allTrafficVehicles, allPedestrians, playerPos);
+    if (!targetCheck.isValid || v.pursuitTimer > CONFIG.POLICE.MAX_PURSUIT_DURATION_SEC) {
+      v.targetInvalidTimer += dt;
+      if (
+        v.targetInvalidTimer >= CONFIG.POLICE.TARGET_INVALID_TIMEOUT_SEC ||
+        v.pursuitTimer > CONFIG.POLICE.MAX_PURSUIT_DURATION_SEC
+      ) {
+        v.state = 'RETURN';
+        v.stateTimer = 0;
+        v.sirenActive = false;
+        v.targetViolator = null;
+        v.pathWaypoints = [];
+        v.targetInvalidTimer = 0;
+        return { pursuitEndedResult: v.pursuitTimer > CONFIG.POLICE.MAX_PURSUIT_DURATION_SEC ? 'abandoned' : 'escaped' };
+      }
+    } else {
+      v.targetInvalidTimer = 0;
     }
 
-    // 尋找違規目標當前座標
-    const targetPos = this.getTargetPosition(allTrafficVehicles, allPedestrians);
+    const targetPos = targetCheck.pos;
     if (!targetPos) {
-      // 目標消失或已被回收，放棄
       v.state = 'RETURN';
+      v.stateTimer = 0;
       v.sirenActive = false;
       v.targetViolator = null;
+      v.pathWaypoints = [];
       return { pursuitEndedResult: 'escaped' };
     }
 
@@ -202,15 +282,32 @@ export class PoliceVehicleController {
       return {};
     }
 
-    // 每 1.0s 請求 Worker A* 重新規劃路徑
+    // 路徑承諾與重新規劃條件：
+    // 1. 每 3 秒才允許一次
+    // 2. 路口內與距離路口 15m 內不得重新規劃
+    // 3. 只有在 (目標離上一次規劃終點超過 25m) 或 (路徑已走完/接近終點) 時才發出規劃請求
     v.lastReplanTime += dt;
     let requestPathPlan: { from: Point2D; to: Point2D } | undefined;
-    if (v.lastReplanTime >= CONFIG.POLICE.REPLAN_PATH_INTERVAL_SEC) {
-      v.lastReplanTime = 0;
-      requestPathPlan = {
-        from: { x: v.x, z: v.z },
-        to: { x: targetPos.x, z: targetPos.z }
-      };
+
+    const isNearIntersection = this.isNearAnyIntersection(v.x, v.z, CONFIG.POLICE.INTERSECTION_NO_REPLAN_RADIUS);
+
+    if (v.lastReplanTime >= CONFIG.POLICE.REPLAN_PATH_INTERVAL_SEC && !isNearIntersection) {
+      const predPos = v.predictedTarget || targetPos;
+      const targetMovedFar =
+        !v.lastReplanPos ||
+        Math.hypot(predPos.x - v.lastReplanPos.x, predPos.z - v.lastReplanPos.z) >
+          CONFIG.POLICE.REPLAN_MIN_TARGET_MOVE_M;
+      const pathNearEnd =
+        !v.pathWaypoints || v.pathWaypoints.length === 0 || v.pathIndex >= v.pathWaypoints.length - 2;
+
+      if (targetMovedFar || pathNearEnd) {
+        v.lastReplanTime = 0;
+        v.lastReplanPos = { x: predPos.x, z: predPos.z };
+        requestPathPlan = {
+          from: { x: v.x, z: v.z },
+          to: { x: predPos.x, z: predPos.z }
+        };
+      }
     }
 
     // 追捕巡航速度 (1.4 倍速限)
@@ -232,7 +329,8 @@ export class PoliceVehicleController {
   private updateIntercept(
     dt: number,
     allTrafficVehicles: TrafficVehicle[],
-    allPedestrians: PedestrianAgent[]
+    allPedestrians: PedestrianAgent[],
+    playerPos: Point2D
   ): {
     pursuitEndedResult?: 'intercepted' | 'escaped' | 'abandoned';
   } {
@@ -242,9 +340,30 @@ export class PoliceVehicleController {
 
     if (v.pursuitTimer > CONFIG.POLICE.MAX_PURSUIT_DURATION_SEC) {
       v.state = 'RETURN';
+      v.stateTimer = 0;
       v.sirenActive = false;
+      v.targetViolator = null;
+      v.pathWaypoints = [];
       return { pursuitEndedResult: 'abandoned' };
     }
+
+    // 檢查目標有效性
+    const targetCheck = this.checkTargetValidity(allTrafficVehicles, allPedestrians, playerPos);
+    if (!targetCheck.isValid) {
+      v.targetInvalidTimer += dt;
+      if (v.targetInvalidTimer >= CONFIG.POLICE.TARGET_INVALID_TIMEOUT_SEC) {
+        v.state = 'RETURN';
+        v.stateTimer = 0;
+        v.sirenActive = false;
+        v.targetViolator = null;
+        v.pathWaypoints = [];
+        v.targetInvalidTimer = 0;
+        return { pursuitEndedResult: 'escaped' };
+      }
+    } else {
+      v.targetInvalidTimer = 0;
+    }
+
 
     // 檢查違規車輛狀態
     if (v.targetViolator?.actorType === 'vehicle') {
@@ -279,7 +398,7 @@ export class PoliceVehicleController {
         };
 
         const dToStop = Math.hypot(stopX - v.x, stopZ - v.z);
-        if (dToStop < 1.2) {
+        if (dToStop < 2.5) {
           v.speed = 0;
           v.targetSpeed = 0;
           v.x = stopX;
@@ -417,7 +536,7 @@ export class PoliceVehicleController {
   }
 
   /**
-   * 車輛物理移動與避障
+   * 車輛物理移動與避障 (採用 Pure Pursuit 與嚴格正向運動學)
    */
   private updateMovement(
     dt: number,
@@ -433,6 +552,10 @@ export class PoliceVehicleController {
 
     for (const other of allTrafficVehicles) {
       if (!other.active) continue;
+      // 在 INTERCEPT 狀態下，若目標車已靠邊停下，允許警車接近至停靠點
+      if (v.state === 'INTERCEPT' && v.targetViolator && String(other.id) === String(v.targetViolator.id)) {
+        continue;
+      }
       const dx = other.x - v.x;
       const dz = other.z - v.z;
       const fDist = dx * fwdX + dz * fwdZ;
@@ -457,6 +580,8 @@ export class PoliceVehicleController {
       }
     }
 
+    this.lastClosestObstacleDist = closestObstacleDist;
+
     // 若前方有障礙且距離太近 (< 5m)，煞車減速避讓
     if (closestObstacleDist < 5.0 && v.state !== 'STOP_AND_CITE') {
       v.targetSpeed = Math.min(v.targetSpeed, Math.max(0, (closestObstacleDist - 2.5) * 1.5));
@@ -465,41 +590,101 @@ export class PoliceVehicleController {
     // 速度加速度平滑
     const accel = v.targetSpeed > v.speed ? 5.5 : 8.0;
     v.speed += (v.targetSpeed - v.speed) * Math.min(1.0, dt * accel);
-    v.speed = Math.max(0, v.speed);
+    v.speed = Math.max(0, v.speed); // 嚴格不可倒車！
 
-    if (v.speed <= 0.01) return;
+    if (v.speed <= 0.01 && v.targetSpeed <= 0.01) {
+      v.steeringAngle = 0;
+      return;
+    }
 
-    // 若有 A* 導航路徑，依路徑推進
-    if (v.pathWaypoints && v.pathWaypoints.length > 0 && v.state === 'PURSUIT') {
-      const curTarget = v.pathWaypoints[v.pathIndex];
-      if (curTarget) {
-        v.targetPoint = curTarget;
-        const dPt = Math.hypot(curTarget.x - v.x, curTarget.z - v.z);
-        if (dPt < 2.5 && v.pathIndex < v.pathWaypoints.length - 1) {
+    // 尋找 Pure Pursuit 預視點 (Lookahead Point)
+    const lookaheadL = Math.max(
+      CONFIG.POLICE.PURE_PURSUIT_MIN_LOOKAHEAD,
+      CONFIG.POLICE.PURE_PURSUIT_SPEED_FACTOR * v.speed
+    );
+
+    let lookaheadTarget: Point2D;
+
+    if (v.state === 'PURSUIT' && v.pathWaypoints && v.pathWaypoints.length > 0) {
+      // 推進 pathIndex：沿路徑推進至距離大於 2.0m 的節點
+      while (v.pathIndex < v.pathWaypoints.length - 1) {
+        const curPt = v.pathWaypoints[v.pathIndex];
+        const dPt = Math.hypot(curPt.x - v.x, curPt.z - v.z);
+        if (dPt < 2.0) {
           v.pathIndex++;
+        } else {
+          break;
         }
       }
+
+      // 從 pathIndex 向前搜尋至距離至少為 lookaheadL 的節點
+      let targetPt = v.pathWaypoints[v.pathIndex];
+      for (let i = v.pathIndex; i < v.pathWaypoints.length; i++) {
+        const pt = v.pathWaypoints[i];
+        const dist = Math.hypot(pt.x - v.x, pt.z - v.z);
+        if (dist >= lookaheadL) {
+          targetPt = pt;
+          break;
+        }
+        targetPt = pt;
+      }
+      lookaheadTarget = targetPt;
+      v.targetPoint = lookaheadTarget;
+    } else {
+      // 巡邏或回歸模式：檢查是否到達 targetPoint
+      const distToTarget = Math.hypot(v.targetPoint.x - v.x, v.targetPoint.z - v.z);
+      if (distToTarget < 2.0 && (v.state === 'PATROL' || v.state === 'RETURN')) {
+        this.advanceToNextPatrolSegment();
+      }
+      lookaheadTarget = v.targetPoint;
     }
 
-    // 向目標點移動
-    const dx = v.targetPoint.x - v.x;
-    const dz = v.targetPoint.z - v.z;
-    const distToTarget = Math.hypot(dx, dz);
+    // Pure Pursuit 轉向角度運算
+    const dx = lookaheadTarget.x - v.x;
+    const dz = lookaheadTarget.z - v.z;
+    const distToLookahead = Math.hypot(dx, dz) || 0.1;
 
-    if (distToTarget < 1.5 && (v.state === 'PATROL' || v.state === 'RETURN')) {
-      this.advanceToNextPatrolSegment();
-    } else if (distToTarget > 0.05) {
-      const dirX = dx / distToTarget;
-      const dirZ = dz / distToTarget;
-      v.x += dirX * v.speed * dt;
-      v.z += dirZ * v.speed * dt;
+    const targetHeading = Math.atan2(dx, dz);
+    let headingDiff = targetHeading - v.rotationY;
+    // 正規化至 [-PI, PI] (-180 ~ 180 度)
+    headingDiff = Math.atan2(Math.sin(headingDiff), Math.cos(headingDiff));
 
-      const targetRot = Math.atan2(dirX, dirZ);
-      let rotDiff = targetRot - v.rotationY;
-      while (rotDiff > Math.PI) rotDiff -= Math.PI * 2;
-      while (rotDiff < -Math.PI) rotDiff += Math.PI * 2;
-      v.rotationY += rotDiff * Math.min(1.0, dt * 6.5);
+    // ±2 度死區濾波，避免在零附近高頻抖動
+    const deadbandRad = (CONFIG.POLICE.STEERING_DEADBAND_DEG * Math.PI) / 180;
+    if (Math.abs(headingDiff) < deadbandRad) {
+      headingDiff = 0;
     }
+
+    // Pure Pursuit 幾何曲率公式: kappa = 2 * sin(alpha) / L
+    const effectiveL = Math.max(lookaheadL, distToLookahead);
+    const kappa = (2 * Math.sin(headingDiff)) / effectiveL;
+
+    // 軸距 L_wb = 2.7m
+    const Lwb = 2.7;
+    let desiredSteer = Math.atan(kappa * Lwb);
+
+    // 隨車速遞減之轉向角度限制 (低速最大 37 度 = 0.65 rad，高速收斂至 0.18 rad)
+    const maxSteer = Math.max(0.18, 0.65 - 0.02 * v.speed);
+    desiredSteer = Math.max(-maxSteer, Math.min(maxSteer, desiredSteer));
+
+    // 限制轉向變化率 (最大 2.5 rad/s) 與低通濾波
+    const maxRate = 2.5 * dt;
+    const steerDelta = Math.max(-maxRate, Math.min(maxRate, desiredSteer - v.steeringAngle));
+    v.steeringAngle += steerDelta;
+
+    // 低通濾波
+    v.steeringAngle += (desiredSteer - v.steeringAngle) * Math.min(1.0, dt * 10.0);
+    v.targetSteeringAngle = desiredSteer;
+    v.steeringHeadingDiff = headingDiff;
+
+    // 車輛航向角更新 (阿克曼近似: yawRate = (v / Lwb) * tan(delta))
+    const yawRate = (v.speed / Lwb) * Math.tan(v.steeringAngle);
+    v.rotationY += yawRate * dt;
+    v.rotationY = Math.atan2(Math.sin(v.rotationY), Math.cos(v.rotationY));
+
+    // 物理位移更新：嚴格僅沿車頭方向前進，禁止任何側向或倒退位移！
+    v.x += Math.sin(v.rotationY) * v.speed * dt;
+    v.z += Math.cos(v.rotationY) * v.speed * dt;
   }
 
   /**
@@ -552,11 +737,41 @@ export class PoliceVehicleController {
         v.laneOffset = laneOffsetDist;
         v.targetPoint = { x: targetPt.x + rightNormX * laneOffsetDist, z: targetPt.z + rightNormZ * laneOffsetDist };
         v.targetHeading = Math.atan2(dx / len, dz / len);
-      } else if (!road.oneway) {
-        v.isReverse = !v.isReverse;
-        v.roadPointIndex = v.isReverse ? road.points.length - 1 : 0;
+      } else {
+        // 尋找最近之相鄰道路 (擴大搜尋範圍至 35m) 保持正向行駛，避免死路掉頭碰撞
+        let bestRoad: RoadFeature | null = null;
+        let bestDist = Infinity;
+        let bestPtIdx = 0;
+        let bestRev = false;
+        for (const r of this.roads) {
+          if (r.points.length < 2) continue;
+          for (let pIdx = 0; pIdx < r.points.length; pIdx++) {
+            const d = Math.hypot(r.points[pIdx].x - lastPt.x, r.points[pIdx].z - lastPt.z);
+            if (d < bestDist && d < 35.0) {
+              bestDist = d;
+              bestRoad = r;
+              bestPtIdx = pIdx;
+              bestRev = pIdx > 0;
+            }
+          }
+        }
+        if (bestRoad) {
+          v.currentRoadId = bestRoad.id;
+          v.isReverse = bestRev;
+          v.roadPointIndex = bestPtIdx;
+          const pt = bestRoad.points[bestPtIdx];
+          v.targetPoint = { x: pt.x, z: pt.z };
+        }
       }
     }
+  }
+
+  public isWaitingAtRedSignal(): boolean {
+    return this.shouldStopAtRedSignal();
+  }
+
+  public isQueuedBehindTraffic(): boolean {
+    return this.lastClosestObstacleDist < 6.0;
   }
 
   private shouldStopAtRedSignal(): boolean {
@@ -616,25 +831,105 @@ export class PoliceVehicleController {
     return false;
   }
 
-  private getTargetPosition(
+  private isNearAnyIntersection(x: number, z: number, extraRadius: number = 15.0): boolean {
+    for (const inter of this.intersections) {
+      const d = Math.hypot(inter.center.x - x, inter.center.z - z);
+      if (d <= inter.radius + extraRadius) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private checkTargetValidity(
     allTrafficVehicles: TrafficVehicle[],
-    allPedestrians: PedestrianAgent[]
-  ): Point2D | null {
+    allPedestrians: PedestrianAgent[],
+    playerPos: Point2D
+  ): { target: TrafficVehicle | PedestrianAgent | null; isValid: boolean; pos: Point2D | null; reason?: string } {
     const v = this.vehicle;
-    if (!v.targetViolator) return null;
+    if (!v.targetViolator) {
+      return { target: null, isValid: false, pos: null, reason: 'no_target' };
+    }
 
     if (v.targetViolator.actorType === 'vehicle') {
       const tv = allTrafficVehicles.find((t) => t.id === v.targetViolator!.id && t.active);
-      if (tv) return { x: tv.x, z: tv.z };
+      if (!tv) {
+        return { target: null, isValid: false, pos: null, reason: 'despawned' };
+      }
+      const distToPlayer = Math.hypot(tv.x - playerPos.x, tv.z - playerPos.z);
+      if (distToPlayer > CONFIG.POLICE.REMOTE_SETTLE_DISTANCE) {
+        return { target: tv, isValid: false, pos: { x: tv.x, z: tv.z }, reason: 'beyond_sim_radius' };
+      }
+      if (tv.lastCitedTimestamp && Date.now() - tv.lastCitedTimestamp < 30000) {
+        return { target: tv, isValid: false, pos: { x: tv.x, z: tv.z }, reason: 'already_cited' };
+      }
+      // 預測位置 (向前預測 2.5 秒)
+      const predSec = CONFIG.POLICE.TARGET_PREDICTION_SEC;
+      let predX = tv.x;
+      let predZ = tv.z;
+      if (tv.speed > 0.5) {
+        predX += Math.sin(tv.rotationY) * tv.speed * predSec;
+        predZ += Math.cos(tv.rotationY) * tv.speed * predSec;
+      }
+      v.predictedTarget = { x: predX, z: predZ };
+      return { target: tv, isValid: true, pos: { x: tv.x, z: tv.z } };
     } else {
       const ped = allPedestrians.find((p) => p.id === v.targetViolator!.id && p.active);
-      if (ped) return { x: ped.x, z: ped.z };
+      if (!ped) {
+        return { target: null, isValid: false, pos: null, reason: 'ped_despawned' };
+      }
+      const distToPlayer = Math.hypot(ped.x - playerPos.x, ped.z - playerPos.z);
+      if (distToPlayer > CONFIG.POLICE.REMOTE_SETTLE_DISTANCE) {
+        return { target: ped, isValid: false, pos: { x: ped.x, z: ped.z }, reason: 'beyond_sim_radius' };
+      }
+      v.predictedTarget = { x: ped.x, z: ped.z };
+      return { target: ped, isValid: true, pos: { x: ped.x, z: ped.z } };
     }
-    return null;
+  }
+
+  public onPathPlanResult(
+    waypoints: Point2D[] | null,
+    cost: number,
+    pathHash: string,
+    _targetPos?: Point2D
+  ): void {
+    const v = this.vehicle;
+    if (!waypoints || waypoints.length === 0) {
+      // 無可行合法有向路線 (例如單行道封閉或無法在圖上連通)：若無既有路徑則放棄追捕回歸巡邏
+      if (v.pathWaypoints.length === 0) {
+        v.state = 'RETURN';
+        v.stateTimer = 0;
+        v.sirenActive = false;
+        v.targetViolator = null;
+        v.pathWaypoints = [];
+      }
+      return;
+    }
+
+    // 承諾機制：若已有正在行駛之有效路徑，檢查是否值得更換 (成本低 15% 以上或目標位移 > 25m)
+    if (v.pathWaypoints.length > 0 && v.pathIndex < v.pathWaypoints.length - 2) {
+      const costImprovement = (v.pathCost || cost) - cost;
+      const improvementRatio = v.pathCost && v.pathCost > 0 ? costImprovement / v.pathCost : 0;
+      const targetMovedFar =
+        v.lastReplanPos && _targetPos
+          ? Math.hypot(_targetPos.x - v.lastReplanPos.x, _targetPos.z - v.lastReplanPos.z) >
+            CONFIG.POLICE.REPLAN_MIN_TARGET_MOVE_M
+          : false;
+
+      if (improvementRatio < CONFIG.POLICE.REPLAN_COST_IMPROVEMENT_RATIO && !targetMovedFar) {
+        // 未達 15% 改善且目標未大幅移動，保持原承諾路徑
+        return;
+      }
+    }
+
+    v.pathWaypoints = waypoints;
+    v.pathIndex = 0;
+    v.pathCost = cost;
+    v.pathHash = pathHash;
+    v.committedSegmentIndex = 0;
   }
 
   public setPathWaypoints(waypoints: Point2D[]): void {
-    this.vehicle.pathWaypoints = waypoints;
-    this.vehicle.pathIndex = 0;
+    this.onPathPlanResult(waypoints, 0, 'legacy');
   }
 }

@@ -5,6 +5,7 @@
 
 import * as THREE from 'three';
 import { CONFIG } from '../config.ts';
+import { LightmapShaderHook } from '../world/lightmap/LightmapShaderHook.ts';
 
 export class CharacterRig {
   public group: THREE.Group;
@@ -22,23 +23,35 @@ export class CharacterRig {
     this.group = new THREE.Group();
     this.group.name = 'CharacterRig';
 
+    const hookMat = (mat: THREE.MeshStandardMaterial) => {
+      mat.onBeforeCompile = (shader) => {
+        LightmapShaderHook.bindUniforms(shader);
+        shader.vertexShader = LightmapShaderHook.injectVertexShader(shader.vertexShader);
+        shader.fragmentShader = LightmapShaderHook.injectEntityFragmentShader(shader.fragmentShader);
+      };
+    };
+
     // 共享材質
     const skinMat = new THREE.MeshStandardMaterial({
       color: CONFIG.PLAYER.COLORS.SKIN,
       roughness: 0.7
     });
+    hookMat(skinMat);
     const shirtMat = new THREE.MeshStandardMaterial({
       color: CONFIG.PLAYER.COLORS.SHIRT,
       roughness: 0.7
     });
+    hookMat(shirtMat);
     const pantsMat = new THREE.MeshStandardMaterial({
       color: CONFIG.PLAYER.COLORS.PANTS,
       roughness: 0.8
     });
+    hookMat(pantsMat);
     const hairMat = new THREE.MeshStandardMaterial({
       color: CONFIG.PLAYER.COLORS.HAIR,
       roughness: 0.9
     });
+    hookMat(hairMat);
     const glassesMat = new THREE.MeshStandardMaterial({
       color: 0x111111,
       roughness: 0.2,

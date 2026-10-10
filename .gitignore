@@ -28,3 +28,8 @@ dist-ssr
 *.sw?
 *.zip
 yt_python_影片/
+
+# Test and temporary directories
+scratch/
+.chrome-user-data*
+

@@ -172,7 +172,11 @@ export class PedestrianDebugVisualizer {
       [PedestrianState.CROSSING]: [0.23, 0.51, 0.96],         // 藍
       [PedestrianState.EVADING]: [0.66, 0.33, 0.97],          // 紫
       [PedestrianState.PANIC]: [0.94, 0.27, 0.27],           // 紅
-      [PedestrianState.HAILING_TAXI]: [0.98, 0.80, 0.08]     // 亮黃 (招手叫計程車)
+      [PedestrianState.HAILING_TAXI]: [0.98, 0.80, 0.08],    // 亮黃 (招手叫計程車)
+      [PedestrianState.KNOCKED_FLYING]: [1.0, 0.2, 0.2],     // 撞飛紅
+      [PedestrianState.FALLEN]: [0.85, 0.1, 0.1],            // 倒地深紅
+      [PedestrianState.GETTING_UP]: [0.98, 0.60, 0.1],       // 起身橙黃
+      [PedestrianState.LEAVING_ROAD]: [0.2, 0.85, 1.0]       // 脫困亮青
     };
 
     const nodes = this.networkData?.nodes || [];
@@ -200,8 +204,17 @@ export class PedestrianDebugVisualizer {
       this.markerColors[i * 3 + 1] = c[1];
       this.markerColors[i * 3 + 2] = c[2];
 
-      // 目標導向線
-      if (agent.targetNodeId >= 0 && agent.targetNodeId < nodes.length) {
+      // 目標導向線 (一般節點或脫困目標點)
+      if (agent.state === PedestrianState.LEAVING_ROAD && agent.escapeTargetPoint) {
+        const base = lineIdx * 6;
+        posArr[base] = agent.x;
+        posArr[base + 1] = agent.y + 0.3;
+        posArr[base + 2] = agent.z;
+        posArr[base + 3] = agent.escapeTargetPoint.x;
+        posArr[base + 4] = 0.3;
+        posArr[base + 5] = agent.escapeTargetPoint.z;
+        lineIdx++;
+      } else if (agent.targetNodeId >= 0 && agent.targetNodeId < nodes.length) {
         const tn = nodes[agent.targetNodeId];
         const base = lineIdx * 6;
         posArr[base] = agent.x;

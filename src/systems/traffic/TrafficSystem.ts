@@ -680,6 +680,7 @@ export class TrafficSystem {
         const avgKmh = this.vehicleSamplingSpeedSeconds > 0
           ? (this.vehicleSamplingSpeedSum / this.vehicleSamplingSpeedSeconds) * 3.6
           : 0;
+        const pedReport = this.pedestrianSystem?.getPedestrianSamplingReport();
         this.vehicleSamplingReport = {
           samplingDurationSec: 60.0,
           totalVehiclesSampled: activeNow,
@@ -688,7 +689,12 @@ export class TrafficSystem {
           headOppositeSpeedCount: deltaOpposite,
           violationsCount: deltaViolations,
           violationRatePercent: Math.round(rate * 10) / 10,
-          isCompliant: deltaWrong === 0 && deltaOpposite === 0
+          isCompliant: deltaWrong === 0 && deltaOpposite === 0,
+          specialStatePedestriansCount: pedReport?.specialStatePedestriansCount,
+          leaveRoadSuccessCount: pedReport?.leaveRoadSuccessCount,
+          leaveRoadAvgDurationSec: pedReport?.leaveRoadAvgDurationSec,
+          leaveRoadFailCount: pedReport?.leaveRoadFailCount,
+          returnToSidewalkRatioPercent: pedReport?.returnToSidewalkRatioPercent
         };
         console.log('[TrafficSystem] 60 秒車輛行為抽樣完成:', this.vehicleSamplingReport);
       }
@@ -769,12 +775,14 @@ export class TrafficSystem {
       }
     }
 
-    // B. 警車鳴笛讓道行為 (台灣特色摩西分海：前方 80m 同向靠右停等、對向減速靠右、通過 3s 後依序起步)
+    // B. 警車鳴笛讓道行為 (台灣特色摩西分海：前方 80m 同向靠右停等、不得停在路口內、被擋 3s 靠右蠕行解除死結、依序起步)
     if (this.policeSystem && !v.targetedByPoliceId && v.state !== 'FLEEING') {
       const sirens = this.policeSystem.getActiveSirenPositions?.() || [];
       let sirenNearby = false;
+      const inIntersection = this.isVehicleInIntersection(v);
 
-      for (const s of sirens) {
+      for (let sIdx = 0; sIdx < sirens.length; sIdx++) {
+        const s = sirens[sIdx];
         const dx = v.x - s.x;
         const dz = v.z - s.z;
         const distToSiren = Math.hypot(dx, dz);
@@ -783,27 +791,48 @@ export class TrafficSystem {
           const fwdFromSiren = dx * Math.sin(s.heading) + dz * Math.cos(s.heading);
           const dotHead = Math.sin(v.rotationY) * Math.sin(s.heading) + Math.cos(v.rotationY) * Math.cos(s.heading);
 
-          if (fwdFromSiren > -5.0) {
+          if (fwdFromSiren > 0 && fwdFromSiren <= CONFIG.POLICE.YIELD_SIREN_DISTANCE) {
             // 警車在後方接近中
             sirenNearby = true;
-            if (dotHead > 0.3) {
-              // 同向前方車輛：打右方向燈、向右靠、停下讓出車道中央
-              v.state = 'YIELDING_SIREN';
+            if (dotHead > 0.4) {
+              // 同向前方車輛：打右方向燈、向右靠
               v.turnSignal = 'right';
-              v.laneOffset = Math.min(2.2, Math.abs(v.laneOffset) + 0.7);
-              v.targetSpeed = 0;
-              v.brakeLightsOn = true;
-              v.yieldResumeTimer = undefined;
+              v.laneOffset = Math.min(2.4, Math.abs(v.laneOffset) + 0.7);
+
+              // 若已在路口內，不可停下，必須先駛出路口
+              if (inIntersection) {
+                v.state = 'DRIVING';
+                v.targetSpeed = Math.max(3.0, v.targetSpeed);
+              } else {
+                v.state = 'YIELDING_SIREN';
+                v.targetSpeed = 0;
+                v.brakeLightsOn = true;
+                v.yieldResumeTimer = undefined;
+
+                // 死結防護：若在警車正前方 8m 內且阻擋超過 3 秒，向右靠並以 2.0 m/s 蠕行前進讓出空間
+                if (fwdFromSiren < 9.0) {
+                  v.blockedTimer = (v.blockedTimer || 0) + dt;
+                  if (v.blockedTimer > 3.0) {
+                    v.laneOffset = Math.min(2.8, Math.abs(v.laneOffset) + 0.8);
+                    v.targetSpeed = 2.0;
+                    v.speed = Math.max(v.speed, 2.0);
+                    v.brakeLightsOn = false;
+                  }
+                } else {
+                  v.blockedTimer = 0;
+                }
+              }
               break;
-            } else if (dotHead < -0.3) {
+            } else if (dotHead < -0.4) {
               // 對向車輛：減速靠右，不完全停下
               v.targetSpeed = Math.min(v.targetSpeed, 3.5);
               v.laneOffset = Math.min(2.0, Math.abs(v.laneOffset) + 0.4);
             }
-          } else if (fwdFromSiren < -20.0 && v.state === 'YIELDING_SIREN') {
-            // 警車已通過超過 20 公尺，啟動依序起步延遲 (3 秒 + 隨機)
+          } else if (fwdFromSiren < -15.0 && v.state === 'YIELDING_SIREN') {
+            // 警車已通過超過 15 公尺，啟動依序起步延遲 (3 秒 + 依車序錯開)
             if (v.yieldResumeTimer === undefined) {
-              v.yieldResumeTimer = CONFIG.POLICE.YIELD_RESUME_DELAY_SEC + Math.random() * 1.5;
+              const carOrder = parseInt(v.id.replace(/\D/g, '') || '0', 10) % 5;
+              v.yieldResumeTimer = CONFIG.POLICE.YIELD_RESUME_DELAY_SEC + carOrder * 0.6 + Math.random() * 0.4;
             }
           }
         }
@@ -811,7 +840,8 @@ export class TrafficSystem {
 
       if (v.state === 'YIELDING_SIREN') {
         if (!sirenNearby && v.yieldResumeTimer === undefined) {
-          v.yieldResumeTimer = CONFIG.POLICE.YIELD_RESUME_DELAY_SEC + Math.random() * 1.0;
+          const carOrder = parseInt(v.id.replace(/\D/g, '') || '0', 10) % 5;
+          v.yieldResumeTimer = CONFIG.POLICE.YIELD_RESUME_DELAY_SEC + carOrder * 0.6 + Math.random() * 0.4;
         }
 
         if (v.yieldResumeTimer !== undefined) {
@@ -820,18 +850,23 @@ export class TrafficSystem {
             v.state = 'DRIVING';
             v.turnSignal = 'none';
             v.yieldResumeTimer = undefined;
+            v.blockedTimer = 0;
           } else {
             v.targetSpeed = 0;
             v.brakeLightsOn = true;
             this.updateDriverPose(v, dt);
             return;
           }
+        } else if (v.blockedTimer && v.blockedTimer > 3.0) {
+          // 正在蠕行避讓中
+          this.updateDriverPose(v, dt);
         } else {
           this.updateDriverPose(v, dt);
           return;
         }
       }
     }
+
 
     // 1. 單一資料來源：尋找車輛面對之號誌進路與停止線
     const targetInfo = this.findTargetApproachAndStopLine(v);
@@ -1018,18 +1053,27 @@ export class TrafficSystem {
       }
     }
 
-    // 行人檢測 (斑馬線或行人靠近)
-    if (this.pedestrianSystem && (pCfg.stopForPedNear || mustStopAtSignal)) {
+    // 行人檢測 (斑馬線或行人靠近，特別注意特殊狀態倒地/脫困中行人)
+    if (this.pedestrianSystem) {
       const peds = this.pedestrianSystem.getActiveAgents();
       for (let p = 0; p < peds.length; p++) {
         const ped = peds[p];
-        const fwdPed = this.getForwardDistance(v, ped.x, ped.z);
-        if (fwdPed > 0 && fwdPed < 8.0) {
-          const latPed = Math.abs(this.getLateralDistance(v, ped.x, ped.z));
-          if (latPed < 2.5) {
-            distToObstacle = Math.min(distToObstacle, fwdPed);
-            isBlockedByPedestrian = true;
-            break;
+        const isSpecialPed =
+          ped.state === 7 || // KNOCKED_FLYING
+          ped.state === 8 || // FALLEN
+          ped.state === 9 || // GETTING_UP
+          ped.state === 10;  // LEAVING_ROAD
+        if (isSpecialPed || pCfg.stopForPedNear || mustStopAtSignal) {
+          const fwdPed = this.getForwardDistance(v, ped.x, ped.z);
+          const stopDist = isSpecialPed ? 12.0 : 8.0;
+          const latThreshold = isSpecialPed ? 3.5 : 2.5;
+          if (fwdPed > -1.0 && fwdPed < stopDist) {
+            const latPed = Math.abs(this.getLateralDistance(v, ped.x, ped.z));
+            if (latPed < latThreshold) {
+              distToObstacle = Math.min(distToObstacle, Math.max(0.1, fwdPed));
+              isBlockedByPedestrian = true;
+              break;
+            }
           }
         }
       }
@@ -1070,7 +1114,7 @@ export class TrafficSystem {
       }
     }
 
-    if (isBlockedByPedestrian && distToObstacle < 6.0) {
+    if (isBlockedByPedestrian && distToObstacle < 12.0) {
       // 禮讓行人煞停
       v.state = 'STOPPED_PEDESTRIAN';
       v.targetSpeed = 0;
@@ -1785,6 +1829,19 @@ export class TrafficSystem {
     }
 
     return bestResult;
+  }
+
+  /**
+   * 檢查車輛是否處於路口範圍內 (半徑 + 3m 緩衝)
+   */
+  private isVehicleInIntersection(v: TrafficVehicle): boolean {
+    for (const inter of this.intersections) {
+      const d = Math.hypot(inter.center.x - v.x, inter.center.z - v.z);
+      if (d <= inter.radius + 3.0) {
+        return true;
+      }
+    }
+    return false;
   }
 
   /**

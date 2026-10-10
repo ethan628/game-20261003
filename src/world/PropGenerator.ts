@@ -37,7 +37,26 @@ export class PropGenerator {
     return this.lampTransforms;
   }
 
-  public generate(roads: RoadFeature[], scene: THREE.Scene, intersections: IntersectionFeature[] = []): void {
+  public updateStreetLamps(transforms: THREE.Matrix4[], scene: THREE.Scene): void {
+    if (this.lampsMesh) {
+      scene.remove(this.lampsMesh);
+      this.lampsMesh.geometry.dispose();
+      (this.lampsMesh.material as THREE.Material).dispose();
+      this.lampsMesh = null;
+    }
+    this.lampTransforms = transforms;
+    if (transforms.length > 0) {
+      this.lampsMesh = this.buildLampsInstanced(transforms);
+      scene.add(this.lampsMesh);
+    }
+  }
+
+  public generate(
+    roads: RoadFeature[],
+    scene: THREE.Scene,
+    intersections: IntersectionFeature[] = [],
+    customLampTransforms?: THREE.Matrix4[]
+  ): void {
     this.dispose(scene);
     this.lampTransforms = [];
 
@@ -279,9 +298,10 @@ export class PropGenerator {
     }
 
     // 2. 街燈
-    if (lampTransforms.length > 0) {
-      this.lampTransforms = lampTransforms;
-      this.lampsMesh = this.buildLampsInstanced(lampTransforms);
+    const targetLamps = (customLampTransforms && customLampTransforms.length > 0) ? customLampTransforms : lampTransforms;
+    if (targetLamps.length > 0) {
+      this.lampTransforms = targetLamps;
+      this.lampsMesh = this.buildLampsInstanced(targetLamps);
       scene.add(this.lampsMesh);
     }
 

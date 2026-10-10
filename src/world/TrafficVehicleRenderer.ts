@@ -15,6 +15,7 @@
 import * as THREE from 'three';
 import { CONFIG } from '../config.ts';
 import { TrafficVehicle } from '../geo/TrafficTypes.ts';
+import { LightmapShaderHook } from './lightmap/LightmapShaderHook.ts';
 
 // 顏色快取 (避免逐幀字串轉換)
 const COLOR_CACHE = new Map<string, [number, number, number]>();
@@ -275,6 +276,8 @@ export class TrafficVehicleRenderer {
     });
 
     mat.onBeforeCompile = (shader) => {
+      LightmapShaderHook.bindUniforms(shader);
+      shader.vertexShader = LightmapShaderHook.injectVertexShader(shader.vertexShader);
       shader.vertexShader = `
         attribute float aCarPart;
         varying float vCarPart;
@@ -287,6 +290,12 @@ export class TrafficVehicleRenderer {
         `
       );
       shader.fragmentShader = `
+        uniform sampler2D uLightmap;
+        uniform vec4 uLightmapBounds;
+        uniform float uNightFactor;
+        uniform float uNightTurnOnRatio;
+        uniform float uBaseNightBrightness;
+        varying vec3 vCustomWorldPosition;
         varying float vCarPart;
       ` + shader.fragmentShader;
       shader.fragmentShader = shader.fragmentShader.replace(
@@ -305,6 +314,13 @@ export class TrafficVehicleRenderer {
           diffuseColor.rgb = vec3(1.0, 0.98, 0.88); // 前大燈
         } else if (vCarPart > 5.5 && vCarPart < 6.5) {
           diffuseColor.rgb = vec3(0.95, 0.08, 0.08); // 後尾燈
+        }
+        if (uNightFactor > 0.01) {
+          vec2 lmUv = (vCustomWorldPosition.xz - uLightmapBounds.xy) / uLightmapBounds.zw;
+          vec4 lmSample = texture2D(uLightmap, lmUv);
+          float lampOn = smoothstep(lmSample.a - 0.08, lmSample.a + 0.08, uNightTurnOnRatio);
+          vec3 lightmapColor = lmSample.rgb * (uNightFactor * uBaseNightBrightness * lampOn);
+          diffuseColor.rgb += diffuseColor.rgb * lightmapColor * 2.2 + lightmapColor * 0.04;
         }
         `
       );
@@ -373,6 +389,8 @@ export class TrafficVehicleRenderer {
     });
 
     mat.onBeforeCompile = (shader) => {
+      LightmapShaderHook.bindUniforms(shader);
+      shader.vertexShader = LightmapShaderHook.injectVertexShader(shader.vertexShader);
       shader.vertexShader = `
         attribute float aScooterPart;
         varying float vScooterPart;
@@ -385,6 +403,12 @@ export class TrafficVehicleRenderer {
         `
       );
       shader.fragmentShader = `
+        uniform sampler2D uLightmap;
+        uniform vec4 uLightmapBounds;
+        uniform float uNightFactor;
+        uniform float uNightTurnOnRatio;
+        uniform float uBaseNightBrightness;
+        varying vec3 vCustomWorldPosition;
         varying float vScooterPart;
       ` + shader.fragmentShader;
       shader.fragmentShader = shader.fragmentShader.replace(
@@ -403,6 +427,13 @@ export class TrafficVehicleRenderer {
           diffuseColor.rgb = vec3(0.95, 0.08, 0.08); // 尾燈
         } else if (vScooterPart > 5.5) {
           diffuseColor.rgb = vec3(0.70, 0.70, 0.75); // 後視鏡銀
+        }
+        if (uNightFactor > 0.01) {
+          vec2 lmUv = (vCustomWorldPosition.xz - uLightmapBounds.xy) / uLightmapBounds.zw;
+          vec4 lmSample = texture2D(uLightmap, lmUv);
+          float lampOn = smoothstep(lmSample.a - 0.08, lmSample.a + 0.08, uNightTurnOnRatio);
+          vec3 lightmapColor = lmSample.rgb * (uNightFactor * uBaseNightBrightness * lampOn);
+          diffuseColor.rgb += diffuseColor.rgb * lightmapColor * 2.2 + lightmapColor * 0.04;
         }
         `
       );
@@ -666,13 +697,31 @@ export class TrafficVehicleRenderer {
 
       shader.vertexShader = shader.vertexShader.replace('#include <beginnormal_vertex>', beginNormalHook);
       shader.vertexShader = shader.vertexShader.replace('#include <begin_vertex>', beginVertexHook);
+      shader.vertexShader = LightmapShaderHook.injectVertexShader(shader.vertexShader);
+      LightmapShaderHook.bindUniforms(shader);
 
-      shader.fragmentShader = `varying vec3 vCharColor;\n` + shader.fragmentShader;
+      shader.fragmentShader = `
+        uniform sampler2D uLightmap;
+        uniform vec4 uLightmapBounds;
+        uniform float uNightFactor;
+        uniform float uNightTurnOnRatio;
+        uniform float uBaseNightBrightness;
+        varying vec3 vCustomWorldPosition;
+        varying vec3 vCharColor;
+      ` + shader.fragmentShader;
+
       shader.fragmentShader = shader.fragmentShader.replace(
         '#include <color_fragment>',
         `
         #include <color_fragment>
         diffuseColor.rgb *= vCharColor;
+        if (uNightFactor > 0.01) {
+          vec2 lmUv = (vCustomWorldPosition.xz - uLightmapBounds.xy) / uLightmapBounds.zw;
+          vec4 lmSample = texture2D(uLightmap, lmUv);
+          float lampOn = smoothstep(lmSample.a - 0.08, lmSample.a + 0.08, uNightTurnOnRatio);
+          vec3 lightmapColor = lmSample.rgb * (uNightFactor * uBaseNightBrightness * lampOn);
+          diffuseColor.rgb += diffuseColor.rgb * lightmapColor * 2.2 + lightmapColor * 0.04;
+        }
         `
       );
     };

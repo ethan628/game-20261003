@@ -78,8 +78,10 @@ export const CONFIG = {
       SHIRT: 0x1e5a8a,
       PANTS: 0x2b3947,
       SHOES: 0x1c1e22
-    }
+    },
+    CROSSWALK_ONLY: false      // 玩家僅限斑馬線過街開關 (預設 false)
   },
+  PLAYER_CROSSWALK_ONLY: false, // 全域捷徑屬性
 
   // 鏡頭控制 (視覺升級：拉遠、仰角約 28 度、FOV 60、加入鏡頭平滑跟隨)
   CAMERA: {
@@ -836,7 +838,19 @@ export const CONFIG = {
     EXPOSURE_LERP_SPEED: 0.10,         // 曝光緩慢過渡 (約 10 秒)
     WET_REFLECTION_INTENSITY: 0.65,    // 雨夜長條倒影強度
     LIGHT_CONE_BOTTOM_RADIUS: 2.0,     // 光錐底部半徑 (寬度約 4.0m)
-    LIGHT_CONE_OPACITY: 0.07           // 光錐低透明度
+    LIGHT_CONE_OPACITY: 0.07,          // 光錐低透明度
+
+    // 區塊光照圖 (Web Worker 預先計算) 規格配置
+    LIGHTMAP: {
+      CHUNK_SIZE: 256,                 // 區塊大小 (m)
+      PADDING: 20,                     // 外擴平滑重疊 (m)
+      WORLD_EXTENT: 1024,              // 全城世界貼圖範圍 (m)
+      DEFAULT_SPACING: 28.0,           // 路燈預設最大間距 (m) (20~40m 可調)
+      DEFAULT_RADIUS: 18.0,            // 有效照射半徑 (m)
+      ALLEY_SPACING: 20.0,             // 小巷/窄路壁燈間距 (m)
+      COVERAGE_THRESHOLD: 0.25,        // 達標光照亮度門檻
+      TARGET_COVERAGE: 0.95            // 目標覆蓋率 95% 以上
+    }
   },
 
   // NPC 行人與車輛行為規範配置 (RULES.md 集中化管理)
@@ -883,7 +897,16 @@ export const CONFIG = {
       MAX_WAITING_SLOTS: 6,         // 最多 6 個站位
       // 聚集統計門檻
       CROWD_DISTANCE_THRESHOLD: 1.2,// 1.2 公尺內有 2 位以上非同伴
-      CROWD_RATE_TARGET_PERCENT: 3.0// 目標低於 3%
+      CROWD_RATE_TARGET_PERCENT: 3.0,// 目標低於 3%
+      // 人車碰撞與脫困參數
+      KNOCKDOWN: {
+        FLYING_DURATION_SEC: 0.6,
+        FALLEN_DURATION_SEC: 2.5,
+        GETTING_UP_DURATION_SEC: 1.2,
+        LEAVING_ROAD_SPEED_BOOST: 1.2, // 走路速度加快 20%
+        ESCAPE_TIMEOUT_SEC: 15.0,      // 超過 15s 視線外傳送
+        OBB_AVOID_MARGIN: 0.8          // 繞開車輛 OBB 裕度
+      }
     },
     // 行人只走斑馬線過街
     CROSSWALK: {
@@ -941,7 +964,21 @@ export const CONFIG = {
     RED_LIGHT_CROSS_SPEED_MPS: 4.17,    // 遇紅燈減速至 15 km/h (約 4.17 m/s) 通過
     PURSUIT_TARGET_DISTANCE: 12.0,      // 追到違規車輛後方約 12 公尺內
     MAX_PURSUIT_DURATION_SEC: 40.0,     // 追逐時間上限 40 秒
-    REPLAN_PATH_INTERVAL_SEC: 1.0,      // 每 1 秒重新規劃路徑
+    REPLAN_PATH_INTERVAL_SEC: 3.0,      // 每 3 秒才允許重新規劃路徑
+    REPLAN_MIN_TARGET_MOVE_M: 25.0,     // 目標離路徑終點超過 25 公尺才允許換路
+    REPLAN_COST_IMPROVEMENT_RATIO: 0.15,// 新路徑成本需比目前路徑低 15% 以上才換路
+    INTERSECTION_NO_REPLAN_RADIUS: 15.0,// 路口內與距離路口 15 公尺內不得重新規劃
+    TARGET_PREDICTION_SEC: 2.5,         // 追動態目標向前預測 2.5 秒
+    PURE_PURSUIT_MIN_LOOKAHEAD: 6.0,    // 預視距離 L = max(6m, 0.8 * speed)
+    PURE_PURSUIT_SPEED_FACTOR: 0.8,
+    STEERING_DEADBAND_DEG: 2.0,         // 轉向角差死區 ±2 度
+    STUCK_DISPLACEMENT_CHECK_SEC: 6.0,  // 6 秒內位移量檢測
+    STUCK_MIN_DISPLACEMENT_M: 3.0,      // 6 秒內位移需大於 3 公尺
+    STUCK_TIMEOUT_DESPAWN_SEC: 10.0,    // 卡住 10 秒脫困重生成
+    JITTER_WINDOW_SEC: 2.0,             // 轉向抖動滑動時間窗 2 秒
+    JITTER_MAX_SIGN_FLIPS: 4,           // 2 秒內轉向符號翻轉超過 4 次視為異常抖動
+    JITTER_SPEED_MAX_KMH: 5.0,          // 抖動車速判定上限 5 km/h
+    TARGET_INVALID_TIMEOUT_SEC: 2.0,    // 目標無效 2 秒後結束追捕
 
     // 攔截與違規者反應
     PULL_OVER_CHANCE: 0.92,             // 違規者配合靠邊機率 92%

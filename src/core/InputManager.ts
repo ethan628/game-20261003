@@ -31,6 +31,7 @@ export class InputManager {
   public onToggleTrafficDebug?: () => void;
   public onToggleStopLineMeasurement?: () => void;
   public onTogglePoliceDebug?: () => void;
+  public onToggleLightingHeatmap?: () => void;
   private isSuspended = false;
 
   constructor(domElement: HTMLElement) {
@@ -147,6 +148,11 @@ export class InputManager {
     if (e.code === 'F15' || e.key === 'F15' || (e.shiftKey && (e.code === 'Backquote' || e.key === '`' || e.key === '~'))) {
       e.preventDefault();
       this.onTogglePoliceDebug?.();
+      return;
+    }
+    if (e.code === 'F16' || e.key === 'F16' || (e.shiftKey && (e.code === 'F3' || e.key === 'F3'))) {
+      e.preventDefault();
+      this.onToggleLightingHeatmap?.();
       return;
     }
 

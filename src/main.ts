@@ -34,7 +34,7 @@ import { PedestrianSystem } from './systems/PedestrianSystem.ts';
 import { PedestrianRenderer } from './world/PedestrianRenderer.ts';
 import { PedestrianDebugVisualizer } from './world/PedestrianDebugVisualizer.ts';
 import { PedestrianNetworkBuilder } from './geo/PedestrianNetworkBuilder.ts';
-import { PedestrianNetworkData } from './geo/PedestrianTypes.ts';
+import { PedestrianNetworkData, PedestrianState } from './geo/PedestrianTypes.ts';
 import { TrafficSignalSystem } from './systems/traffic-signals/TrafficSignalSystem.ts';
 import { TrafficSignalRenderer } from './world/TrafficSignalRenderer.ts';
 import { TrafficSignalDebugVisualizer } from './world/TrafficSignalDebugVisualizer.ts';
@@ -121,6 +121,8 @@ class GameApp {
     weatherMs: 0,
     nightLightingMs: 0
   };
+  private playerJaywalkTimer = 0;
+  private hasShownJaywalkWarning = false;
 
   constructor() {
     const canvasContainer = document.getElementById('game-canvas-container')!;
@@ -166,6 +168,7 @@ class GameApp {
     this.trafficDebugVisualizer = new TrafficDebugVisualizer(this.engine.scene);
     this.trafficSystem.setTrafficSignalSystem(this.trafficSignalSystem);
     this.trafficSystem.setPedestrianSystem(this.pedestrianSystem);
+    this.pedestrianSystem.setTrafficSystem(this.trafficSystem);
 
     this.policeSystem = new PoliceSystem();
     this.policeRenderer = new PoliceRenderer(this.engine.scene);
@@ -265,7 +268,11 @@ class GameApp {
     this.gameLoop.start();
     (window as any).__game = this;
     (window as any).game = this;
+    (window as any).CONFIG = CONFIG;
     (window as any).THREE = THREE;
+    (window as any).knockNearestPedestrianOnRoad = () => {
+      return this.pedestrianSystem.forceKnockNearestPedestrianOnRoad(this.player.position);
+    };
 
     // 7. 啟動檢測：若 URL 帶有 ?auto=1，自動進入世界並設定視角
     const urlParams = new URLSearchParams(window.location.search);
@@ -471,6 +478,16 @@ class GameApp {
       this.updatePedestrianDebugPanel();
     });
 
+    this.hud.onKnockPedOnRoadClick(() => {
+      const ok = this.pedestrianSystem.forceKnockNearestPedestrianOnRoad(this.player.position);
+      if (ok) {
+        this.hud.showNotification('💥 已將最近行人擊倒在車道上 (觀察起身脫困)');
+      } else {
+        this.hud.showNotification('⚠️ 附近 60m 內無有效行人');
+      }
+      this.updatePedestrianDebugPanel();
+    });
+
     // 按 F9 鍵切換交通號誌除錯視覺化 (綠色=OSM, 橘色=自動補齊, 白色=停止線)
     const handleToggleSignalDebug = () => {
       const isVisible = this.trafficSignalDebug.toggle();
@@ -665,6 +682,18 @@ class GameApp {
     this.input.onTogglePoliceDebug = handleTogglePoliceDebug;
     this.hud.onPoliceDebugClick(handleTogglePoliceDebug);
 
+    // 按 F16 / Shift+F3 或點擊 HUD 切換光照覆蓋熱圖
+    const handleToggleLightingHeatmap = () => {
+      const active = this.nightLightingSystem.toggleHeatmapMode();
+      const report = this.nightLightingSystem.getCoverageReport();
+      this.hud.toggleLightingHeatmap(active, report);
+      this.hud.showNotification(
+        active ? `🟢 光照覆蓋熱圖開啟 (覆蓋率: ${report?.coveragePercent ?? '--'}%)` : '⚪ 光照覆蓋熱圖已關閉'
+      );
+    };
+    this.input.onToggleLightingHeatmap = handleToggleLightingHeatmap;
+    this.hud.onLightingHeatmapClick(handleToggleLightingHeatmap);
+
     // 按 R 鍵切換濕潤路面 (雨後微光反光模式)
     const handleToggleWet = () => {
       const isWet = this.worldManager.toggleWetMode();
@@ -801,7 +830,17 @@ class GameApp {
       // 清空舊世界並建構新世界
       this.worldManager.clear();
       await this.worldManager.buildWorld(data);
-      this.nightLightingSystem.rebuildLampCache();
+      this.nightLightingSystem.setLocation(name);
+      await this.nightLightingSystem.rebuildWorldLighting(
+        data.roads,
+        data.intersections || [],
+        data.buildings || [],
+        data.shops || [],
+        data,
+        (p) => {
+          this.loadingOverlay.updateMessage(`載入世界：${name}`, `計算區塊光照圖... ${Math.round(p * 100)}%`);
+        }
+      );
 
       // 同步天氣與時間系統經緯度
       this.timeSystem.setCoordinates(lat, lon);
@@ -859,6 +898,8 @@ class GameApp {
       }
       this.pedestrianSystem.setNetwork(pedNetwork);
       this.pedestrianDebug.setNetwork(pedNetwork);
+      this.pedestrianSystem.setRoadsAndIntersections(data.roads, intersections);
+      this.pedestrianSystem.setTrafficSystem(this.trafficSystem);
 
       // 初始化交通號誌系統、GPU 實例渲染器與除錯視覺化
       this.trafficSignalSystem.setIntersections(intersections);
@@ -907,8 +948,14 @@ class GameApp {
           const fallbackData = this.osmFetcher.getProceduralFallback(lat, lon, name);
           this.currentProjection = new GeoProjection(lat, lon);
           this.worldManager.clear();
-          await this.worldManager.buildWorld(fallbackData);
-          this.nightLightingSystem.rebuildLampCache();
+          this.nightLightingSystem.setLocation(name);
+          await this.nightLightingSystem.rebuildWorldLighting(
+            fallbackData.roads,
+            fallbackData.intersections || [],
+            fallbackData.buildings || [],
+            fallbackData.shops || [],
+            fallbackData
+          );
           this.timeSystem.setCoordinates(lat, lon);
           this.weatherSystem.setCoordinates(lat, lon);
           this.weatherRenderer.setRoadGenerator(this.worldManager.getRoadGenerator());
@@ -1111,6 +1158,35 @@ class GameApp {
 
     // 更新玩家移動與物理碰撞
     this.player.update(fixedDelta, cameraYaw, colliders);
+
+    // 玩家僅限斑馬線過街 (playerCrosswalkOnly) 違規檢測
+    if (CONFIG.PLAYER_CROSSWALK_ONLY || CONFIG.PLAYER.CROSSWALK_ONLY) {
+      const px = this.player.position.x;
+      const pz = this.player.position.z;
+      const onRoad = this.pedestrianSystem.isPointOnRoadway(px, pz);
+      if (onRoad) {
+        this.playerJaywalkTimer = (this.playerJaywalkTimer || 0) + fixedDelta;
+        if (this.playerJaywalkTimer >= 2.0 || !this.hasShownJaywalkWarning) {
+          this.playerJaywalkTimer = 0;
+          this.hasShownJaywalkWarning = true;
+          this.hud.showNotification('⚠️ 請走斑馬線');
+          window.dispatchEvent(
+            new CustomEvent('violation:committed', {
+              detail: {
+                actorType: 'player',
+                id: -1,
+                violationType: 'playerJaywalk',
+                position: { x: px, z: pz },
+                timestamp: Date.now()
+              }
+            })
+          );
+        }
+      } else {
+        this.hasShownJaywalkWarning = false;
+        this.playerJaywalkTimer = 0;
+      }
+    }
 
     // 逐幀更新環境：動態太陽陰影追隨玩家位置、微粒動態
     this.worldManager.updateEnvironment(this.player.position, fixedDelta);
@@ -1478,13 +1554,15 @@ class GameApp {
       const compTag = a.companionGroupId ? ` <span style="color:#a78bfa;">[同行組#${a.companionGroupId}]</span>` : '';
       const borderCol = a.isViolator ? '#ff6600' : '#f472b6';
 
+      const stateName = PedestrianState[a.state] || a.state;
+
       listHtml += `
         <div style="background: rgba(30,41,59,0.7); padding: 4px 6px; border-radius: 4px; margin-bottom: 4px; border-left: 3px solid ${borderCol}; font-size: 11px;">
           <div style="display:flex; justify-content:space-between;">
             <b>行人 [${a.id}]${compTag}</b>
             <span style="color:#94a3b8;">${dist}m | ${spd} km/h</span>
           </div>
-          <div>狀態: <b>${a.state}</b>${violTag}</div>
+          <div>狀態: <b>${stateName}</b>${violTag}</div>
         </div>
       `;
     }
@@ -1498,6 +1576,7 @@ class GameApp {
       <div style="margin-bottom: 4px;"><b>聚集比例</b>：<span style="color:${stats.crowdedRatePercent < 3.0 ? '#4ade80' : '#f59e0b'}; font-weight:bold;">${stats.crowdedRatePercent.toFixed(1)}%</span> (目標 &lt; 3%)</div>
       <div style="margin-bottom: 4px;"><b>守規斑馬線率</b>：<span style="color:#4ade80; font-weight:bold;">${crossZebraRate}%</span> (目標 100%)</div>
       <div style="margin-bottom: 4px;"><b>倒退走事件</b>：<span style="color:${stats.backwardsWalkCount === 0 ? '#4ade80' : '#ef4444'}; font-weight:bold;">${stats.backwardsWalkCount}次</span> (目標 0)</div>
+      <div style="margin-bottom: 4px;"><b>人車碰撞脫困</b>：特殊狀態 ${stats.specialStateCount}人 | 脫困成功 ${stats.leaveRoadSuccessCount}次 (均時:${stats.leaveRoadAvgDurationSec}s) | 失敗:${stats.leaveRoadFailCount} | 回人行道:${stats.returnToSidewalkRatioPercent}% | 越界:${stats.outOfBoundsEventsCount}</div>
       <div style="margin-bottom: 4px;"><b>違規統計</b>：${stats.violationsCount.total}次 (${stats.violationRatePercent.toFixed(1)}%) (紅燈:${stats.violationsCount.jaywalkRed}, 無斑馬線:${stats.violationsCount.crossNoZebra}, 貼車道:${stats.violationsCount.walkRoadEdge})</div>
       <div style="margin-bottom: 6px;"><b>AI 邏輯耗時</b>：${stats.aiTimeMs.toFixed(2)}ms (預算≤0.3ms) | <b>Draw Calls</b>：${stats.drawCalls}</div>
       <div style="font-weight:700; color:#f472b6; margin-bottom:4px; border-top:1px solid rgba(148,163,184,0.2); padding-top:4px;">附近行人 (最近 5 人)：</div>

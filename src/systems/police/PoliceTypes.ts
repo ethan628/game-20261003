@@ -67,11 +67,29 @@ export interface PoliceVehicle {
   targetViolator: ViolationEventData | null;
   targetVehicleId?: string;
   targetPedestrianId?: number;
+  predictedTarget?: Point2D;
+  targetInvalidTimer: number;
 
-  // A* 規劃路徑節點
+  // A* 規劃路徑節點與路徑承諾
   pathWaypoints: Point2D[];
   pathIndex: number;
   lastReplanTime: number;
+  lastReplanPos?: Point2D;
+  pathCost?: number;
+  pathHash?: string;
+  committedSegmentIndex: number;
+
+  // 轉向控制與抖動偵測 (Pure Pursuit)
+  steeringAngle: number;
+  targetSteeringAngle: number;
+  steeringHeadingDiff: number;
+  steeringFlips: Array<{ time: number; sign: number }>;
+  jitterDetected: boolean;
+  stuckReason?: string;
+
+  // 位移監控 (6 秒位移檢查)
+  stuckAnchorPos: Point2D;
+  stuckDisplacementTimer: number;
 
   // 警員與警笛/警燈
   officers: PoliceOfficer[];
@@ -113,6 +131,7 @@ export interface PoliceStats {
   totalPoliceCars: number;
   activeCars: number;
   activePursuits: number;
+  activePursuitsList?: Array<{ carId: string; targetId: string | number; remainingSec: number }>;
   citationsThisMinute: number;
   totalCitationsIssued: number;
   totalCitations: number;
@@ -140,6 +159,8 @@ export interface PoliceSamplingReport {
   policeDetectedCount: number;
   pursuitCount: number;
   pursuitsInitiatedCount: number;
+  pursuitsStartedCount: number;        // 追捕開始次數
+  validPursuitRatioPercent: number;    // 有效追捕比例
   interceptedCount: number;
   interceptedAndCitedCount: number;
   escapedCount: number;
@@ -149,7 +170,10 @@ export interface PoliceSamplingReport {
   interceptSuccessRatePercent: number;
   averageReactionTimeSec: number;      // 0.5~1.5s
   averageInterceptTimeSec: number;     // 從追捕到攔停平均秒數
-  stuckEventsCount: number;            // 目標 0
-  collisionEventsCount: number;        // 目標 0
+  stuckEventsCount: number;            // 卡住次數 (目標 0)
+  jitterEventsCount: number;           // 抖動事件次數 (目標 0)
+  unstuckEventsCount: number;          // 脫困次數
+  noTargetPursuitCount: number;        // 無目標追捕次數 (目標 0)
+  collisionEventsCount: number;        // 追捕事故次數 (目標 0)
   isCompliant: boolean;
 }

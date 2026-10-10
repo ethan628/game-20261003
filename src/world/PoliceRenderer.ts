@@ -12,6 +12,7 @@
 import * as THREE from 'three';
 import { CONFIG } from '../config.ts';
 import { PoliceVehicle } from '../systems/police/PoliceTypes.ts';
+import { LightmapShaderHook } from './lightmap/LightmapShaderHook.ts';
 
 export class PoliceRenderer {
   private group: THREE.Group;
@@ -278,6 +279,8 @@ export class PoliceRenderer {
 
     // 注入夜間車身識別 Shader：警車白色車身維持清晰微發光底色，藍色條紋鮮明飽滿，保證任何夜晚陰暗處皆清晰可辨
     mat.onBeforeCompile = (shader) => {
+      LightmapShaderHook.bindUniforms(shader);
+      shader.vertexShader = LightmapShaderHook.injectVertexShader(shader.vertexShader);
       shader.vertexShader = `
         varying vec3 vOrigBodyColor;
         ${shader.vertexShader}
@@ -290,6 +293,12 @@ export class PoliceRenderer {
       );
 
       shader.fragmentShader = `
+        uniform sampler2D uLightmap;
+        uniform vec4 uLightmapBounds;
+        uniform float uNightFactor;
+        uniform float uNightTurnOnRatio;
+        uniform float uBaseNightBrightness;
+        varying vec3 vCustomWorldPosition;
         varying vec3 vOrigBodyColor;
         ${shader.fragmentShader}
       `.replace(
@@ -302,6 +311,13 @@ export class PoliceRenderer {
           totalEmissiveRadiance += vec3(0.42, 0.42, 0.46);
         } else if (isBlueStripe) {
           totalEmissiveRadiance += vec3(0.12, 0.45, 1.05);
+        }
+        if (uNightFactor > 0.01) {
+          vec2 lmUv = (vCustomWorldPosition.xz - uLightmapBounds.xy) / uLightmapBounds.zw;
+          vec4 lmSample = texture2D(uLightmap, lmUv);
+          float lampOn = smoothstep(lmSample.a - 0.08, lmSample.a + 0.08, uNightTurnOnRatio);
+          vec3 lightmapColor = lmSample.rgb * (uNightFactor * uBaseNightBrightness * lampOn);
+          diffuseColor.rgb += diffuseColor.rgb * lightmapColor * 2.2 + lightmapColor * 0.04;
         }
         `
       );

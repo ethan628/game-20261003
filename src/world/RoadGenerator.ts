@@ -12,6 +12,7 @@ import * as THREE from 'three';
 import { CONFIG } from '../config.ts';
 import { Point2D, RoadFeature, IntersectionFeature, StopLine, IntersectionCrossing } from '../geo/OsmTypes.ts';
 import { TextureGenerator } from './TextureGenerator.ts';
+import { LightmapShaderHook } from './lightmap/LightmapShaderHook.ts';
 
 export class RoadGenerator {
   private roadMesh: THREE.Mesh | null = null;
@@ -23,88 +24,14 @@ export class RoadGenerator {
   private roadMaterial: THREE.MeshStandardMaterial | null = null;
   private sideMaterial: THREE.MeshStandardMaterial | null = null;
   private isWet = false;
-  private nightFactor = 0.0;
-  private groundVisibility = 1.0;
+  public nightFactor = 0.0;
+  public groundVisibility = 1.0;
 
   private injectNightGroundShader(mat: THREE.MeshStandardMaterial): void {
-    const dummyPos: THREE.Vector3[] = [];
-    const dummyCols: THREE.Vector4[] = [];
-    for (let i = 0; i < 8; i++) {
-      dummyPos.push(new THREE.Vector3());
-      dummyCols.push(new THREE.Vector4(0, 0, 0, 0));
-    }
-
-    mat.userData.nightUniforms = {
-      uNightFactor: { value: this.nightFactor },
-      uGroundVisibility: { value: this.groundVisibility },
-      uGroundNightBoost: { value: 0.095 }, // 符合 6~10% 白天強度，確保無路燈暗處也能分辨地面輪廓
-      uBaseNightBrightness: { value: 1.0 },
-      uNearbyLights: { value: dummyPos },
-      uNearbyLightColors: { value: dummyCols }
-    };
-
     mat.onBeforeCompile = (shader) => {
-      shader.uniforms.uNightFactor = mat.userData.nightUniforms.uNightFactor;
-      shader.uniforms.uGroundVisibility = mat.userData.nightUniforms.uGroundVisibility;
-      shader.uniforms.uGroundNightBoost = mat.userData.nightUniforms.uGroundNightBoost;
-      shader.uniforms.uBaseNightBrightness = mat.userData.nightUniforms.uBaseNightBrightness;
-      shader.uniforms.uNearbyLights = mat.userData.nightUniforms.uNearbyLights;
-      shader.uniforms.uNearbyLightColors = mat.userData.nightUniforms.uNearbyLightColors;
-
-      shader.vertexShader = `
-        varying vec3 vCustomWorldPosition;
-      ` + shader.vertexShader.replace(
-        '#include <worldpos_vertex>',
-        `#include <worldpos_vertex>
-         vCustomWorldPosition = (modelMatrix * vec4(transformed, 1.0)).xyz;
-        `
-      );
-
-      shader.fragmentShader = `
-        uniform float uNightFactor;
-        uniform float uGroundVisibility;
-        uniform float uGroundNightBoost;
-        uniform float uBaseNightBrightness;
-        uniform vec3 uNearbyLights[8];
-        uniform vec4 uNearbyLightColors[8];
-        varying vec3 vCustomWorldPosition;
-      ` + shader.fragmentShader;
-
-      shader.fragmentShader = shader.fragmentShader.replace(
-        '#include <dithering_fragment>',
-        `
-        #include <dithering_fragment>
-        // 1. 純冷藍灰補光 (#3a4764)，夜間基礎微光，非路燈區也能辨識道路與人行道
-        vec3 cGroundNight = vec3(0.227, 0.278, 0.392);
-        float boost = uGroundNightBoost * uNightFactor * uGroundVisibility;
-        gl_FragColor.rgb += cGroundNight * boost;
-
-        // 2. 附近路燈假光照亮地面 (照亮柏油紋理、地磚、標線，讓地板清晰可見)
-        if (uNightFactor > 0.01) {
-          vec3 streetLightAccum = vec3(0.0);
-          for (int i = 0; i < 8; i++) {
-            vec3 lPos = uNearbyLights[i];
-            vec4 lCol = uNearbyLightColors[i];
-            if (lCol.a > 0.01) {
-              float dHoriz = length(vCustomWorldPosition.xz - lPos.xz);
-              float d3D = distance(vCustomWorldPosition, lPos);
-              
-              // 錐形下照半徑約 13.0m，平滑漸層
-              float coneFalloff = smoothstep(13.0, 0.0, dHoriz);
-              
-              // 衰減與下照垂直餘弦 (入射角 N·L)
-              float atten = 1.0 / (1.0 + 0.04 * d3D + 0.012 * d3D * d3D);
-              float nDotL = clamp((lPos.y - vCustomWorldPosition.y) / max(0.8, d3D), 0.2, 1.0);
-              
-              streetLightAccum += lCol.rgb * (coneFalloff * atten * nDotL * lCol.a * 3.6);
-            }
-          }
-          // 照亮材質漫反射紋理（柏油瀝青顆粒、人行道方格磚縫、斑馬線磨損質感），帶微量基礎直接光
-          gl_FragColor.rgb += gl_FragColor.rgb * streetLightAccum * 2.5 + streetLightAccum * 0.07;
-        }
-        `
-      );
-
+      LightmapShaderHook.bindUniforms(shader);
+      shader.vertexShader = LightmapShaderHook.injectVertexShader(shader.vertexShader);
+      shader.fragmentShader = LightmapShaderHook.injectGroundFragmentShader(shader.fragmentShader);
       (mat as any).customShader = shader;
     };
   }

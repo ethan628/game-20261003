@@ -36,6 +36,9 @@ export class PoliceDebugVisualizer {
   private losLines: THREE.Line[] = [];
   private pursuitLines: THREE.Line[] = [];
   private astarPathLines: THREE.Line[] = [];
+  private committedSegmentLines: THREE.Line[] = [];
+  private predictedTargetMarkers: THREE.Mesh[] = [];
+  private replanMarkers: THREE.Mesh[] = [];
 
   // DOM 面板元素
   private panelElement: HTMLElement | null = null;
@@ -143,8 +146,37 @@ export class PoliceDebugVisualizer {
       pathLine.visible = false;
       this.astarPathLines.push(pathLine);
       this.group.add(pathLine);
+
+      // 6. 已承諾路段導引線 (深藍/青綠粗線)
+      const comGeom = new THREE.BufferGeometry().setFromPoints([
+        new THREE.Vector3(0, 0, 0),
+        new THREE.Vector3(0, 0, 0)
+      ]);
+      const comMat = new THREE.LineBasicMaterial({ color: 0x3b82f6, linewidth: 4 });
+      const comLine = new THREE.Line(comGeom, comMat);
+      comLine.visible = false;
+      this.committedSegmentLines.push(comLine);
+      this.group.add(comLine);
+
+      // 7. 預測目標標記 (金黃色小球)
+      const predGeom = new THREE.SphereGeometry(0.8, 12, 12);
+      const predMat = new THREE.MeshBasicMaterial({ color: 0xfacc15, wireframe: true });
+      const predMesh = new THREE.Mesh(predGeom, predMat);
+      predMesh.visible = false;
+      this.predictedTargetMarkers.push(predMesh);
+      this.group.add(predMesh);
+
+      // 8. 重新規劃位置標記 (洋紅色圓環)
+      const replanGeom = new THREE.RingGeometry(0.6, 1.2, 16);
+      replanGeom.rotateX(-Math.PI / 2);
+      const replanMat = new THREE.MeshBasicMaterial({ color: 0xd946ef, side: THREE.DoubleSide });
+      const replanMesh = new THREE.Mesh(replanGeom, replanMat);
+      replanMesh.visible = false;
+      this.replanMarkers.push(replanMesh);
+      this.group.add(replanMesh);
     }
   }
+
 
   private initDomPanel(): void {
     const el = document.createElement('div');
@@ -182,6 +214,7 @@ export class PoliceDebugVisualizer {
         <button id="btn-force-red-run" style="background: #991b1b; color: #fff; border: 1px solid #ef4444; border-radius: 4px; padding: 6px; cursor: pointer; font-size: 12px; font-weight: 600;">🚦 強制最近車輛違規 (搶紅燈)</button>
         <button id="btn-force-speeding" style="background: #c2410c; color: #fff; border: 1px solid #f97316; border-radius: 4px; padding: 6px; cursor: pointer; font-size: 12px; font-weight: 600;">⚡ 強制最近車輛違規 (超速)</button>
         <button id="btn-force-jaywalk" style="background: #854d0e; color: #fff; border: 1px solid #eab308; border-radius: 4px; padding: 6px; cursor: pointer; font-size: 12px; font-weight: 600;">🚶 強制最近行人違規 (穿越馬路)</button>
+        <button id="btn-list-stuck-jitter" style="background: #4338ca; color: #fff; border: 1px solid #6366f1; border-radius: 4px; padding: 6px; cursor: pointer; font-size: 12px; font-weight: 600;">⚠️ 列出抖動或卡住的警車</button>
         <button id="btn-start-sampling" style="background: #0f766e; color: #fff; border: 1px solid #14b8a6; border-radius: 4px; padding: 6px; cursor: pointer; font-size: 12px; font-weight: 600;">⏱️ 開始 60 秒執法抽樣評估</button>
       </div>
     `;
@@ -216,6 +249,22 @@ export class PoliceDebugVisualizer {
       this.showToast(ok ? '🚶 已觸發最近行人違規穿越！' : '⚠️ 附近無活躍行人');
     });
 
+    el.querySelector('#btn-list-stuck-jitter')?.addEventListener('click', () => {
+      const list = this.policeSystem.listStuckOrJitteringCars();
+      console.log('[PoliceDebug] 抖動或卡住的警車列表:', list);
+      if (list.length === 0) {
+        this.showToast('✅ 目前無任何抖動或卡住之警車 (0 輛)');
+      } else {
+        const info = list
+          .map(
+            (c) =>
+              `[${c.id}] 狀態:${c.state} 速度:${c.speed}km/h 原因:${c.stuckReason} 卡住:${c.stuckTimer}s 翻轉:${c.steeringFlipsCount}次`
+          )
+          .join('\n');
+        alert(`⚠️ 抖動/卡住警車 (${list.length} 輛):\n${info}`);
+      }
+    });
+
     el.querySelector('#btn-start-sampling')?.addEventListener('click', () => {
       this.policeSystem.startSampling();
       this.showToast('⏱️ 已啟動 60 秒警察執法抽樣評估！');
@@ -231,7 +280,11 @@ export class PoliceDebugVisualizer {
     (window as any).getPoliceSamplingReport = () => {
       return this.policeSystem.getSamplingReport();
     };
+    (window as any).listStuckOrJitteringPolice = () => {
+      return this.policeSystem.listStuckOrJitteringCars();
+    };
   }
+
 
   public toggle(): boolean {
     this.isVisible = !this.isVisible;
@@ -262,12 +315,26 @@ export class PoliceDebugVisualizer {
         ? `<span style="color: #facc15; font-weight: bold;">評估中 (剩餘 ${Math.ceil(this.policeSystem.getSamplingRemainingSec())}s)</span>`
         : `<span style="color: #94a3b8;">未啟動</span>`;
 
+      let carDetails = '';
+      for (const c of vehicles) {
+        if (!c.active) continue;
+        const steerDeg = (((c.steeringAngle || 0) * 180) / Math.PI).toFixed(1);
+        const headingDiffDeg = (((c.steeringHeadingDiff || 0) * 180) / Math.PI).toFixed(1);
+        const spd = (c.speed * 3.6).toFixed(1);
+        carDetails += `<div style="margin-top: 4px; padding-top: 4px; border-top: 1px dashed rgba(255,255,255,0.1); font-size: 11px;">
+          <b style="color: #38bdf8;">${c.id}</b> [${c.state}] 速度: ${spd}km/h<br/>
+          轉向: <b>${steerDeg}°</b> (夾角: <b>${headingDiffDeg}°</b>) | 翻轉: ${c.steeringFlips?.length || 0}次<br/>
+          路徑: ${c.pathWaypoints?.length || 0}點 | 段: ${c.committedSegmentIndex || 0} | 雜湊: ${c.pathHash ? c.pathHash.slice(0, 14) : '無'}
+        </div>`;
+      }
+
       statusContent.innerHTML = `
         <div>• 警車數: <b>${stats.activeCars}/${CONFIG.POLICE.MAX_CARS}</b> | 巡邏中: <b>${stats.patrollingCars}</b></div>
         <div>• 追捕中: <b>${stats.activePursuits}/${CONFIG.POLICE.MAX_ACTIVE_PURSUITS}</b> | 開罰完成: <b>${stats.totalCitations}</b></div>
         <div>• 逃脫數: <b>${stats.totalEscaped}</b> | 放棄追捕: <b>${stats.totalAbandoned}</b></div>
         <div>• AI 計算耗時: <b>${stats.aiTimeMs.toFixed(3)} ms</b> (預算 0.5ms)</div>
         <div>• 60秒抽樣狀態: ${samplingStatus}</div>
+        ${carDetails}
       `;
     }
 
@@ -284,6 +351,9 @@ export class PoliceDebugVisualizer {
       const losLine = this.losLines[i];
       const purLine = this.pursuitLines[i];
       const pathLine = this.astarPathLines[i];
+      const comLine = this.committedSegmentLines[i];
+      const predMesh = this.predictedTargetMarkers[i];
+      const replanMesh = this.replanMarkers[i];
 
       const pv = vehicles[i];
       if (!pv || !pv.active) {
@@ -292,6 +362,9 @@ export class PoliceDebugVisualizer {
         losLine.visible = false;
         purLine.visible = false;
         pathLine.visible = false;
+        if (comLine) comLine.visible = false;
+        if (predMesh) predMesh.visible = false;
+        if (replanMesh) replanMesh.visible = false;
         continue;
       }
 
@@ -347,6 +420,39 @@ export class PoliceDebugVisualizer {
       } else {
         pathLine.visible = false;
       }
+
+      // 4. 已承諾路段導引線
+      if (comLine) {
+        if (pv.active && (pv.state === 'PURSUIT' || pv.state === 'PATROL') && pv.targetPoint) {
+          comLine.visible = true;
+          const comPosAttr = comLine.geometry.attributes.position;
+          comPosAttr.setXYZ(0, pv.x, 0.35, pv.z);
+          comPosAttr.setXYZ(1, pv.targetPoint.x, 0.35, pv.targetPoint.z);
+          comPosAttr.needsUpdate = true;
+        } else {
+          comLine.visible = false;
+        }
+      }
+
+      // 5. 預測目標標記
+      if (predMesh) {
+        if (pv.active && pv.predictedTarget && (pv.state === 'PURSUIT' || pv.state === 'INTERCEPT')) {
+          predMesh.visible = true;
+          predMesh.position.set(pv.predictedTarget.x, 0.8, pv.predictedTarget.z);
+        } else {
+          predMesh.visible = false;
+        }
+      }
+
+      // 6. 重新規劃位置標記
+      if (replanMesh) {
+        if (pv.active && pv.lastReplanPos && pv.state === 'PURSUIT') {
+          replanMesh.visible = true;
+          replanMesh.position.set(pv.lastReplanPos.x, 0.15, pv.lastReplanPos.z);
+        } else {
+          replanMesh.visible = false;
+        }
+      }
     }
   }
 
@@ -392,18 +498,23 @@ export class PoliceDebugVisualizer {
         <div>• 總違規次數: <b style="color: #f87171;">${r.totalViolationsCommitted}</b></div>
         <div>• 警察發現次數: <b style="color: #38bdf8;">${r.policeDetectedCount}</b></div>
         <div>• 平均反應時間: <b>${r.averageReactionTimeSec.toFixed(2)} 秒</b> (標準 0.5~1.5s)</div>
-        <div>• 發動追捕次數: <b>${r.pursuitsInitiatedCount}</b></div>
+        <div>• 發動追捕次數: <b>${r.pursuitsInitiatedCount}</b> (開始次數: <b>${r.pursuitsStartedCount}</b>)</div>
+        <div>• 有效追捕比例: <b style="color: ${r.validPursuitRatioPercent >= 90 ? '#4ade80' : '#facc15'};">${r.validPursuitRatioPercent.toFixed(1)}%</b></div>
         <div>• 成功攔下並開罰: <b style="color: #4ade80;">${r.interceptedAndCitedCount}</b></div>
         <div>• 違規者逃脫次數: <b>${r.fledEscapedCount}</b> (配合度約 92%)</div>
         <div>• 攔下成功率: <b style="color: ${r.interceptSuccessRatePercent >= 80 ? '#4ade80' : '#facc15'};">${r.interceptSuccessRatePercent.toFixed(1)}%</b> (目標 ~90%)</div>
-        <div>• 追捕事故次數: <b style="color: ${r.collisionEventsCount === 0 ? '#4ade80' : '#ef4444'};">${r.collisionEventsCount}</b> (目標為 0)</div>
+        <div>• 轉向抖動次數: <b style="color: ${r.jitterEventsCount === 0 ? '#4ade80' : '#ef4444'};">${r.jitterEventsCount}</b> (目標為 0)</div>
+        <div>• 無目標追捕次數: <b style="color: ${r.noTargetPursuitCount === 0 ? '#4ade80' : '#ef4444'};">${r.noTargetPursuitCount}</b> (目標為 0)</div>
+        <div>• 警察脫困次數: <b>${r.unstuckEventsCount}</b></div>
         <div>• 警車卡住次數: <b style="color: ${r.stuckEventsCount === 0 ? '#4ade80' : '#ef4444'};">${r.stuckEventsCount}</b> (目標為 0)</div>
+        <div>• 追捕事故次數: <b style="color: ${r.collisionEventsCount === 0 ? '#4ade80' : '#ef4444'};">${r.collisionEventsCount}</b> (目標為 0)</div>
       </div>
 
       <div style="text-align: right;">
         <button id="btn-confirm-modal" style="background: #0284c7; color: #fff; border: none; padding: 8px 18px; border-radius: 6px; font-weight: bold; cursor: pointer;">確認關閉</button>
       </div>
     `;
+
 
     document.body.appendChild(modal);
     this.reportModalElement = modal;

@@ -6,86 +6,21 @@
 import * as THREE from 'three';
 import { CONFIG } from '../config.ts';
 import { PolygonFeature } from '../geo/OsmTypes.ts';
+import { LightmapShaderHook } from './lightmap/LightmapShaderHook.ts';
 
 export class TerrainFeatureGenerator {
   private waterMesh: THREE.Mesh | null = null;
   private greenMesh: THREE.Mesh | null = null;
   private waterMaterial: THREE.MeshStandardMaterial | null = null;
   private greenMaterial: THREE.MeshStandardMaterial | null = null;
-  private nightFactor = 0.0;
-  private groundVisibility = 1.0;
+  public nightFactor = 0.0;
+  public groundVisibility = 1.0;
 
-  private injectNightGroundShader(mat: THREE.MeshStandardMaterial, boostRate = 0.095): void {
-    const dummyPos: THREE.Vector3[] = [];
-    const dummyCols: THREE.Vector4[] = [];
-    for (let i = 0; i < 8; i++) {
-      dummyPos.push(new THREE.Vector3());
-      dummyCols.push(new THREE.Vector4(0, 0, 0, 0));
-    }
-
-    mat.userData.nightUniforms = {
-      uNightFactor: { value: this.nightFactor },
-      uGroundVisibility: { value: this.groundVisibility },
-      uGroundNightBoost: { value: boostRate },
-      uBaseNightBrightness: { value: 1.0 },
-      uNearbyLights: { value: dummyPos },
-      uNearbyLightColors: { value: dummyCols }
-    };
-
+  private injectNightGroundShader(mat: THREE.MeshStandardMaterial, _boostRate = 0.095): void {
     mat.onBeforeCompile = (shader) => {
-      shader.uniforms.uNightFactor = mat.userData.nightUniforms.uNightFactor;
-      shader.uniforms.uGroundVisibility = mat.userData.nightUniforms.uGroundVisibility;
-      shader.uniforms.uGroundNightBoost = mat.userData.nightUniforms.uGroundNightBoost;
-      shader.uniforms.uBaseNightBrightness = mat.userData.nightUniforms.uBaseNightBrightness;
-      shader.uniforms.uNearbyLights = mat.userData.nightUniforms.uNearbyLights;
-      shader.uniforms.uNearbyLightColors = mat.userData.nightUniforms.uNearbyLightColors;
-
-      shader.vertexShader = `
-        varying vec3 vCustomWorldPosition;
-      ` + shader.vertexShader.replace(
-        '#include <worldpos_vertex>',
-        `#include <worldpos_vertex>
-         vCustomWorldPosition = (modelMatrix * vec4(transformed, 1.0)).xyz;
-        `
-      );
-
-      shader.fragmentShader = `
-        uniform float uNightFactor;
-        uniform float uGroundVisibility;
-        uniform float uGroundNightBoost;
-        uniform float uBaseNightBrightness;
-        uniform vec3 uNearbyLights[8];
-        uniform vec4 uNearbyLightColors[8];
-        varying vec3 vCustomWorldPosition;
-      ` + shader.fragmentShader;
-
-      shader.fragmentShader = shader.fragmentShader.replace(
-        '#include <dithering_fragment>',
-        `
-        #include <dithering_fragment>
-        vec3 cGroundNight = vec3(0.227, 0.278, 0.392);
-        float boost = uGroundNightBoost * uNightFactor * uGroundVisibility;
-        gl_FragColor.rgb += cGroundNight * boost;
-
-        if (uNightFactor > 0.01) {
-          vec3 streetLightAccum = vec3(0.0);
-          for (int i = 0; i < 8; i++) {
-            vec3 lPos = uNearbyLights[i];
-            vec4 lCol = uNearbyLightColors[i];
-            if (lCol.a > 0.01) {
-              float dHoriz = length(vCustomWorldPosition.xz - lPos.xz);
-              float d3D = distance(vCustomWorldPosition, lPos);
-              float coneFalloff = smoothstep(13.0, 0.0, dHoriz);
-              float atten = 1.0 / (1.0 + 0.04 * d3D + 0.012 * d3D * d3D);
-              float nDotL = clamp((lPos.y - vCustomWorldPosition.y) / max(0.8, d3D), 0.2, 1.0);
-              streetLightAccum += lCol.rgb * (coneFalloff * atten * nDotL * lCol.a * 3.6);
-            }
-          }
-          gl_FragColor.rgb += gl_FragColor.rgb * streetLightAccum * 2.2 + streetLightAccum * 0.06;
-        }
-        `
-      );
-
+      LightmapShaderHook.bindUniforms(shader);
+      shader.vertexShader = LightmapShaderHook.injectVertexShader(shader.vertexShader);
+      shader.fragmentShader = LightmapShaderHook.injectGroundFragmentShader(shader.fragmentShader);
       (mat as any).customShader = shader;
     };
   }

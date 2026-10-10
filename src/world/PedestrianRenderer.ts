@@ -12,6 +12,7 @@
 import * as THREE from 'three';
 import { CONFIG } from '../config.ts';
 import { PedestrianAgent } from '../systems/PedestrianSystem.ts';
+import { LightmapShaderHook } from './lightmap/LightmapShaderHook.ts';
 
 // 顏色 Hex 快取解析器 (避免逐幀字串轉換與記憶體配置)
 const COLOR_CACHE = new Map<string, [number, number, number]>();
@@ -371,8 +372,16 @@ export class PedestrianRenderer {
 
       shader.vertexShader = shader.vertexShader.replace('#include <beginnormal_vertex>', beginNormalHook);
       shader.vertexShader = shader.vertexShader.replace('#include <begin_vertex>', beginVertexHook);
+      shader.vertexShader = LightmapShaderHook.injectVertexShader(shader.vertexShader);
+      LightmapShaderHook.bindUniforms(shader);
 
       shader.fragmentShader = `
+        uniform sampler2D uLightmap;
+        uniform vec4 uLightmapBounds;
+        uniform float uNightFactor;
+        uniform float uNightTurnOnRatio;
+        uniform float uBaseNightBrightness;
+        varying vec3 vCustomWorldPosition;
         varying vec3 vPedColor;
       ` + shader.fragmentShader;
 
@@ -381,6 +390,13 @@ export class PedestrianRenderer {
         `
         #include <color_fragment>
         diffuseColor.rgb *= vPedColor;
+        if (uNightFactor > 0.01) {
+          vec2 lmUv = (vCustomWorldPosition.xz - uLightmapBounds.xy) / uLightmapBounds.zw;
+          vec4 lmSample = texture2D(uLightmap, lmUv);
+          float lampOn = smoothstep(lmSample.a - 0.08, lmSample.a + 0.08, uNightTurnOnRatio);
+          vec3 lightmapColor = lmSample.rgb * (uNightFactor * uBaseNightBrightness * lampOn);
+          diffuseColor.rgb += diffuseColor.rgb * lightmapColor * 2.2 + lightmapColor * 0.04;
+        }
         `
       );
     };
@@ -539,8 +555,16 @@ export class PedestrianRenderer {
       `;
 
       shader.vertexShader = shader.vertexShader.replace('#include <begin_vertex>', beginVertexHook);
+      shader.vertexShader = LightmapShaderHook.injectVertexShader(shader.vertexShader);
+      LightmapShaderHook.bindUniforms(shader);
 
       shader.fragmentShader = `
+        uniform sampler2D uLightmap;
+        uniform vec4 uLightmapBounds;
+        uniform float uNightFactor;
+        uniform float uNightTurnOnRatio;
+        uniform float uBaseNightBrightness;
+        varying vec3 vCustomWorldPosition;
         varying vec3 vFarColor;
       ` + shader.fragmentShader;
 
@@ -549,6 +573,13 @@ export class PedestrianRenderer {
         `
         #include <color_fragment>
         diffuseColor.rgb *= vFarColor;
+        if (uNightFactor > 0.01) {
+          vec2 lmUv = (vCustomWorldPosition.xz - uLightmapBounds.xy) / uLightmapBounds.zw;
+          vec4 lmSample = texture2D(uLightmap, lmUv);
+          float lampOn = smoothstep(lmSample.a - 0.08, lmSample.a + 0.08, uNightTurnOnRatio);
+          vec3 lightmapColor = lmSample.rgb * (uNightFactor * uBaseNightBrightness * lampOn);
+          diffuseColor.rgb += diffuseColor.rgb * lightmapColor * 2.2 + lightmapColor * 0.04;
+        }
         `
       );
     };
@@ -698,7 +729,7 @@ export class PedestrianRenderer {
 
       // 準備幾何變換矩陣
       this.dummyObj.position.set(agent.x, agent.y, agent.z);
-      this.dummyObj.rotation.set(0, agent.rotationY, 0);
+      this.dummyObj.rotation.set(agent.pitch || 0, agent.rotationY, agent.roll || 0);
       this.dummyObj.scale.set(agent.widthScale, agent.heightScale, agent.widthScale);
       this.dummyObj.updateMatrix();
 

@@ -52,7 +52,11 @@ export enum PedestrianState {
   CROSSING = 3,
   EVADING = 4,
   PANIC = 5,
-  HAILING_TAXI = 6
+  HAILING_TAXI = 6,
+  KNOCKED_FLYING = 7,  // 被撞飛
+  FALLEN = 8,          // 倒地
+  GETTING_UP = 9,      // 起身中
+  LEAVING_ROAD = 10    // 離開車道 (脫困中)
 }
 
 export interface PedestrianSystemStats {
@@ -64,6 +68,12 @@ export interface PedestrianSystemStats {
   evading: number;
   panic: number;
   hailing?: number;
+  specialStateCount: number;        // 特殊狀態行人數 (被撞飛/倒地/起身/離開車道)
+  leaveRoadSuccessCount: number;    // 離開車道成功次數
+  leaveRoadAvgDurationSec: number;  // 離開車道平均耗時 (目標 < 8s)
+  leaveRoadFailCount: number;       // 離開車道失敗次數 (目標 0)
+  returnToSidewalkRatioPercent: number; // 被撞後回到人行道比例 (目標 100%)
+  outOfBoundsEventsCount: number;   // 越界事件 (目標 0)
   crowdedCount: number;             // 1.2m 內有 2 位以上非同伴
   crowdedRatePercent: number;       // 聚集比例 (目標 < 3%)
   crossingsTotal: number;           // 過街總次數
@@ -84,10 +94,16 @@ export interface PedestrianSystemStats {
 export interface PedestrianSamplingReport {
   samplingDurationSec: number;
   totalPedestriansSampled: number;
-  backwardsCount: number;           // 目標 0
-  crowdedRatePercent: number;       // 目標 < 3%
-  crowdedEventsCount: number;       // 聚集事件數
-  zebraComplianceRatePercent: number; // 守規過街經斑馬線比例 (目標 100%)
+  specialStatePedestriansCount: number; // 特殊狀態行人數
+  leaveRoadSuccessCount: number;        // 離開車道成功次數
+  leaveRoadAvgDurationSec: number;      // 離開車道平均耗時 (目標 < 8s)
+  leaveRoadFailCount: number;           // 離開車道失敗次數 (目標 0)
+  returnToSidewalkRatioPercent: number; // 回到人行道比例 (目標 100%)
+  outOfBoundsEventsCount: number;       // 越界事件數 (目標 0)
+  backwardsCount: number;               // 目標 0
+  crowdedRatePercent: number;           // 目標 < 3%
+  crowdedEventsCount: number;           // 聚集事件數
+  zebraComplianceRatePercent: number;   // 守規過街經斑馬線比例 (目標 100%)
   crossingsTotal: number;
   crossingsOnZebra: number;
   crossingsViolations: number;
@@ -97,7 +113,7 @@ export interface PedestrianSamplingReport {
     walkRoadEdge: number;
     total: number;
   };
-  violationRatePercent: number;     // 目標約 5~8%
+  violationRatePercent: number;         // 目標約 5~8%
   isCompliant: boolean;
 }
 
